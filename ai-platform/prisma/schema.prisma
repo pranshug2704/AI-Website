@@ -1,0 +1,59 @@
+datasource db {
+  provider = "sqlite" // Changed to SQLite for local development
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id                 String    @id @default(cuid())
+  name               String
+  email              String    @unique
+  password           String
+  subscription       String    @default("free") // "free", "pro", "enterprise"
+  usageLimit         Int       @default(100000)
+  usageTotal         Int       @default(0)
+  stripeCustomerId   String?
+  stripeSubscriptionId String?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+  lastLogin          DateTime?
+  chats              Chat[]
+  apiKeys            ApiKey[]
+}
+
+model Chat {
+  id          String      @id @default(cuid())
+  title       String
+  modelId     String?
+  userId      String
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages    Message[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+}
+
+model Message {
+  id               String    @id @default(cuid())
+  role             String    // "user", "assistant", "system", "error"
+  content          String
+  chatId           String
+  chat             Chat      @relation(fields: [chatId], references: [id], onDelete: Cascade)
+  modelId          String?
+  promptTokens     Int?
+  completionTokens Int?
+  totalTokens      Int?
+  createdAt        DateTime  @default(now())
+}
+
+model ApiKey {
+  id        String    @id @default(cuid())
+  key       String    @unique
+  name      String
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime  @default(now())
+  lastUsed  DateTime?
+}
