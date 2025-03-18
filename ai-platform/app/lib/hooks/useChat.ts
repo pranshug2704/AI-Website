@@ -18,7 +18,7 @@ export const useChat = (
   initialChatId?: string,
   initialSelectedChat?: Chat | null
 ) => {
-  const [chats, setChats] = useState<Chat[]>(initialChats);
+  const [chats, setChats] = useState<Chat[]>(initialChats || []);
   const [activeChat, setActiveChat] = useState<Chat | null>(initialSelectedChat || null);
   const [isLoading, setIsLoading] = useState(false);
   const [selectedModel, setSelectedModel] = useState<AIModel | undefined>(undefined);
@@ -27,6 +27,29 @@ export const useChat = (
   const [availableProviders, setAvailableProviders] = useState<string[]>([]);
   const [userTier, setUserTier] = useState<'free' | 'pro' | 'enterprise'>('free');
   const providersLoadedRef = useRef(false);
+  
+  console.log('[useChat] Hook initialized with:', {
+    initialChatsCount: initialChats?.length || 0,
+    initialChatId,
+    hasInitialSelectedChat: !!initialSelectedChat,
+    currentUserId: currentUser?.id
+  });
+  
+  // Initialize with initialChats whenever they change
+  useEffect(() => {
+    if (initialChats && initialChats.length > 0) {
+      console.log(`[useChat] Setting ${initialChats.length} initial chats`);
+      setChats(initialChats);
+    }
+  }, [initialChats]);
+  
+  // Set initial active chat if provided
+  useEffect(() => {
+    if (initialSelectedChat && !activeChat) {
+      console.log('[useChat] Setting initial selected chat:', initialSelectedChat.id);
+      setActiveChat(initialSelectedChat);
+    }
+  }, [initialSelectedChat, activeChat]);
   
   // Get available models based on user subscription
   const availableModels = getAvailableModels(currentUser.subscription);
@@ -134,10 +157,14 @@ export const useChat = (
     }
   }, [selectedModel, currentUser.id]);
 
-  // Select a chat
+  // Select a specific chat
   const handleSelectChat = useCallback((chatId: string) => {
+    console.log('[useChat] Selecting chat with ID:', chatId);
+    
     const chat = chats.find(c => c.id === chatId);
+    
     if (chat) {
+      console.log('[useChat] Chat found, setting as active chat');
       setActiveChat(chat);
       
       // Set selected model if chat has a modelId
@@ -147,7 +174,10 @@ export const useChat = (
       } else {
         setSelectedModel(undefined);
       }
+    } else {
+      console.error('[useChat] Chat not found with ID:', chatId);
     }
+    
     return chat;
   }, [chats, availableModels]);
 
@@ -190,28 +220,62 @@ export const useChat = (
 
   // Update chat title
   const updateChatTitle = useCallback(async (chatId: string) => {
+    console.log(`[useChat] Attempting to update title for chat: ${chatId}`);
+    
     const chat = chats.find(c => c.id === chatId);
-    if (!chat || chat.messages.length < 2) return;
+    if (!chat) {
+      console.log(`[useChat] Chat not found in state: ${chatId}`);
+      return;
+    }
+    
+    if (chat.messages.length < 1) {
+      console.log(`[useChat] Chat has no messages, skipping title update: ${chatId}`);
+      return;
+    }
+
+    // Don't update if chat already has a non-default title
+    if (chat.title && chat.title !== 'New Chat') {
+      console.log(`[useChat] Chat already has a custom title: "${chat.title}", skipping update`);
+      return;
+    }
 
     try {
+      console.log(`[useChat] Generating title for chat with ${chat.messages.length} messages`);
+      
       // Generate title based on the first few messages
       const newTitle = await generateTitle(chatId, chat.messages);
+      console.log(`[useChat] Generated new title: "${newTitle}"`);
 
-      // Update chat title
+      if (!newTitle || newTitle === 'New Chat') {
+        console.log(`[useChat] Title generation returned default title, skipping update`);
+        return;
+      }
+
+      // Update chat title in local state
+      console.log(`[useChat] Updating title in state from "${chat.title}" to "${newTitle}"`);
+      
+      // Create updated chat object with new title
+      const updatedChat = { ...chat, title: newTitle };
+      
+      // Update chat title in state
       setChats(prevChats => 
-        prevChats.map(c => c.id === chatId ? { ...c, title: newTitle } : c)
+        prevChats.map(c => c.id === chatId ? updatedChat : c)
       );
       
       // Update active chat if it's the one being modified
       if (activeChat?.id === chatId) {
-        setActiveChat(prev => prev ? { ...prev, title: newTitle } : null);
+        setActiveChat(updatedChat);
       }
+      
+      // Save the updated chat to the server immediately
+      console.log(`[useChat] Saving updated chat title to server`);
+      await saveChat(updatedChat);
 
       return newTitle;
     } catch (error) {
-      console.error('Error updating chat title:', error);
+      console.error('[useChat] Error updating chat title:', error);
     }
-  }, [chats, activeChat, generateTitle]);
+  }, [chats, activeChat, generateTitle, saveChat]);
 
   // Update chat with new messages and save to server
   const updateChatWithMessage = useCallback((chat: Chat, updatedMessages: Message[]) => {
@@ -281,15 +345,13 @@ export const useChat = (
 
     try {
       setIsLoading(true);
-      
-      const trimmedContent = content.trim();
-      
+
       // Create a temporary user message
       const userMessage: Message = {
         id: crypto.randomUUID(),
         role: 'user' as MessageRole,
-        content: trimmedContent, // Always include the text content
-        contentType: imageData && imageData.length > 0 ? 'multipart' as MessageContentType : 'text' as MessageContentType,
+        content,
+        contentType: imageData && imageData.length > 0 ? 'image' as MessageContentType : 'text' as MessageContentType,
         images: imageData,
         createdAt: new Date(),
       };
@@ -310,7 +372,40 @@ export const useChat = (
         messages: [...activeChat.messages, userMessage, tempAssistantMessage],
         updatedAt: new Date(),
       };
-      
+
+      // If this is the first message and the title is "New Chat",
+      // update the title immediately using the message content
+      if (activeChat.messages.length === 0 && activeChat.title === 'New Chat' && content.trim().length > 0) {
+        // Create title from the user message
+        const title = content.length > 30 ? content.substring(0, 30) + '...' : content;
+        console.log(`[useChat] Creating title from first message: "${title}"`);
+        
+        // Update chat with title
+        updatedChat.title = title;
+        
+        // Also initiate a direct title update on the server
+        try {
+          fetch('/api/chat/updateTitle', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              chatId: activeChat.id,
+              title
+            }),
+          }).then(response => {
+            if (!response.ok) {
+              console.error(`[useChat] Failed to update title directly: ${response.status}`);
+            } else {
+              console.log(`[useChat] Successfully updated title on server to: "${title}"`);
+            }
+          });
+        } catch (error) {
+          console.error('[useChat] Error updating title:', error);
+        }
+      }
+
       // Update the active chat
       setActiveChat(updatedChat);
 
@@ -319,28 +414,51 @@ export const useChat = (
         return prevChats.map((chat) => (chat.id === updatedChat.id ? updatedChat : chat));
       });
 
+      // Schedule a title update with the API as well
+      if (activeChat.messages.length === 0) {
+        console.log(`[useChat] This is the first message, scheduling API title update for chat ${activeChat.id}`);
+        // Try multiple times to ensure the title gets updated
+        setTimeout(() => {
+          console.log(`[useChat] API title update attempt for chat ${activeChat.id}`);
+          updateChatTitle(activeChat.id);
+        }, 1000);
+      }
+
       // Get the most appropriate model based on the prompt and available models
       let selectedModelId = modelId;
       
-      // If auto-select, determine the best model for the task
-      if (!selectedModelId || selectedModelId === 'auto-select') {
-        const availableModelsWithProviders = getModelsWithAvailability();
+      if (!modelId) {
         const taskType = detectTaskType(content);
+        console.log(`Detected task type: ${taskType}`);
         
-        // Get models suitable for this task
         const modelsForTask = getModelsForTask(taskType, userTier);
+        console.log(`Models for task ${taskType}:`, modelsForTask.map(m => m.name).join(', '));
         
-        // Filter by available providers
+        const availableModelsWithProviders = getModelsWithAvailability();
+        console.log(`Available models with provider availability:`, 
+          availableModelsWithProviders.map((m: AIModel & { providerAvailable: boolean }) => 
+            `${m.name} (${m.provider}): ${m.providerAvailable}`
+          ));
+        
+        // Filter for models where the provider is available
         const availableModelsForTask = modelsForTask
           .filter(model => availableProviders.includes(model.provider.toLowerCase()));
+        console.log(`Available models for task: ${availableModelsForTask.map(m => m.name).join(', ')}`);
         
         // Select the first available model for the task, or fall back to any available model
         selectedModelId = availableModelsForTask.length > 0 
           ? availableModelsForTask[0].id
           : (availableModelsWithProviders.find(m => m.providerAvailable)?.id || modelsForTask[0].id);
+        
+        console.log(`Auto-selected model: ${selectedModelId}`);
       }
 
       const model = getModelById(selectedModelId || '') || getModelsForTask('general', userTier)[0];
+      
+      // Log the provider availability to help with debugging
+      console.log(`Selected model ${model.name} from provider ${model.provider}`);
+      console.log(`Provider available: ${availableProviders.includes(model.provider.toLowerCase())}`);
+      console.log(`Available providers: ${availableProviders.join(', ')}`);
 
       // Call the chat API to send the message
       const chatApi = useChatApi();
@@ -375,7 +493,18 @@ export const useChat = (
             );
             
             setIsLoading(false);
-            updateChatTitle(activeChat.id);
+            
+            // Update the chat title after the first response is received
+            // Only update the title if this is the first exchange and title is still default
+            if (updatedMessages.length <= 3 && prevChat.title === 'New Chat') {
+              console.log(`[useChat] First message exchange complete for chat ${activeChat.id}, triggering title update`);
+              // Add a slight delay to let things settle
+              setTimeout(() => {
+                console.log(`[useChat] Now updating title for chat ${activeChat.id}`);
+                updateChatTitle(activeChat.id);
+              }, 1000);
+            }
+            
             return updatedChat;
           });
         },
@@ -410,7 +539,7 @@ export const useChat = (
       console.error('Error sending message:', error);
       setIsLoading(false);
     }
-  }, [activeChat, setChats, setActiveChat, updateChatTitle, getModelsWithAvailability, userTier, availableProviders, useChatApi]);
+  }, [activeChat, setChats, setActiveChat, updateChatTitle, getModelsWithAvailability, userTier, availableProviders, useChatApi, selectedModel]);
 
   // Change the model
   const handleModelChange = useCallback((modelId: string) => {
@@ -427,35 +556,68 @@ export const useChat = (
 
   // Initialize from chats and initialChatId on mount - must come after all function declarations
   useEffect(() => {
-    if (!initializedRef.current) {
-      // If we have an initial selected chat, use it
-      if (initialSelectedChat) {
-        setActiveChat(initialSelectedChat);
-        initializedRef.current = true;
+    // Skip this entire effect if we already have an active chat
+    if (activeChat) {
+      console.log('[useChat] Already have active chat, skipping initialization:', activeChat.id);
+      initializedRef.current = true;
+      return;
+    }
+    
+    // Only run initialization once
+    if (initializedRef.current) {
+      console.log('[useChat] Already initialized, skipping');
+      return;
+    }
+    
+    console.log('[useChat] Initializing chat state...');
+    console.log('[useChat] Initial chats:', initialChats.length);
+    console.log('[useChat] Initial chat ID:', initialChatId);
+    console.log('[useChat] Initial selected chat:', initialSelectedChat?.id);
+    
+    // Mark as initialized immediately to prevent multiple runs
+    initializedRef.current = true;
+    
+    // Process in order of priority:
+    // 1. If we have an explicitly selected chat, use it
+    if (initialSelectedChat) {
+      console.log('[useChat] Using provided selected chat:', initialSelectedChat.id);
+      setActiveChat(initialSelectedChat);
+      return;
+    }
+    
+    // 2. If we have a specific chat ID, try to find and select it
+    if (initialChatId && initialChatId !== 'new') {
+      console.log('[useChat] Looking for chat with ID:', initialChatId);
+      const chat = initialChats.find(c => c.id === initialChatId);
+      if (chat) {
+        console.log('[useChat] Found chat with ID, selecting:', chat.id);
+        setActiveChat(chat);
         return;
       }
-      
-      // If we have an initialChatId, try to find and select that chat
-      if (initialChatId && initialChatId !== 'new') {
-        const chat = initialChats.find(c => c.id === initialChatId);
-        if (chat) {
-          setActiveChat(chat);
-          initializedRef.current = true;
-          return;
-        }
-      }
-      
-      // Otherwise handle as before
-      if (initialChats.length > 0 && !activeChat) {
-        // Set the most recent chat as active
-        setActiveChat(initialChats[0]);
-      } else if (initialChats.length === 0 || initialChatId === 'new') {
-        // No chats exist or specifically requested new chat, create a new one
-        handleNewChat();
-      }
-      initializedRef.current = true;
     }
-  }, [initialChats, activeChat, handleNewChat, initialChatId, initialSelectedChat]);
+    
+    // 3. If we have chats, use the first one
+    if (initialChats.length > 0) {
+      console.log('[useChat] Using first chat:', initialChats[0].id);
+      setActiveChat(initialChats[0]);
+      return;
+    }
+    
+    // IMPORTANT: We no longer automatically create chats here
+    // Let the ChatInterface handle chat creation instead
+    console.log('[useChat] No chats available - letting ChatInterface handle it');
+
+  }, [initialChats, activeChat, initialChatId, initialSelectedChat]);
+
+  // Debug logging
+  useEffect(() => {
+    console.log('[useChat] Initialization state:', {
+      chatsCount: chats.length,
+      activeChat: activeChat?.id,
+      currentUser: currentUser?.id,
+      initialized: initializedRef.current
+    });
+  }, [chats, activeChat, currentUser]);
 
   return {
     chats,

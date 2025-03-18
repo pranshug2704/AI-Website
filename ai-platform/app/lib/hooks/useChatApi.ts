@@ -184,28 +184,83 @@ export const useChatApi = () => {
     if (messages.length < 1) return 'New Chat';
 
     try {
-      // First try to get a title from the API
-      const response = await fetch('/api/chat/title', {
+      console.log(`[useChatApi] Generating title for chat ${chatId} with ${messages.length} messages`);
+      
+      // Get the first user message
+      const userMessage = messages.find(m => m.role === 'user');
+      if (!userMessage) {
+        console.log(`[useChatApi] No user message found, using default title`);
+        return 'New Chat';
+      }
+      
+      console.log(`[useChatApi] First message content: "${userMessage.content.substring(0, 50)}..."`);
+      
+      // First try to directly use message content to create title
+      let title = '';
+      if (userMessage.content && userMessage.content.trim().length > 0) {
+        const content = userMessage.content.trim();
+        title = content.length > 30 ? content.substring(0, 30) + '...' : content;
+        console.log(`[useChatApi] Created title directly from content: "${title}"`);
+      }
+      
+      // Only call API if title is still empty
+      if (!title) {
+        // Call the API to generate a title
+        console.log(`[useChatApi] Calling API endpoint /api/chat/title for chat ${chatId}`);
+        const response = await fetch('/api/chat/title', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            chatId,
+            messages: messages.slice(0, 2), // Just use the first couple messages
+          }),
+        });
+
+        if (!response.ok) {
+          console.log(`[useChatApi] API title generation failed with status ${response.status}, falling back to client-side generation`);
+          // Fall back to local title generation if API fails
+          const fallbackTitle = generateChatTitle(userMessage.content);
+          console.log(`[useChatApi] Generated fallback title: "${fallbackTitle}"`);
+          return fallbackTitle;
+        }
+
+        const data = await response.json();
+        console.log(`[useChatApi] Generated title from API: "${data.title}"`);
+        title = data.title;
+      }
+      
+      // Direct database update regardless of API call, to ensure it's saved
+      console.log(`[useChatApi] Directly updating chat ${chatId} with title "${title}" in database`);
+      const updateResponse = await fetch('/api/chat/updateTitle', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           chatId,
-          messages: messages.slice(0, 2), // Just use the first couple messages
+          title: title || userMessage.content.substring(0, 30) + '...'
         }),
       });
-
-      if (!response.ok) {
-        // Fall back to local title generation if API fails
-        return generateChatTitle(messages[0].content);
+      
+      if (!updateResponse.ok) {
+        console.error(`[useChatApi] Failed to update title directly in database: ${updateResponse.status}`);
+      } else {
+        console.log(`[useChatApi] Successfully updated title in database`);
       }
-
-      const data = await response.json();
-      return data.title || generateChatTitle(messages[0].content);
+      
+      // Return the title
+      return title || userMessage.content.substring(0, 30) + '...';
     } catch (error) {
-      console.error('Error generating chat title:', error);
-      return generateChatTitle(messages[0].content);
+      console.error('[useChatApi] Error generating chat title:', error);
+      // Use the content of the first message as a fallback
+      if (messages.length > 0 && messages[0].content) {
+        const fallbackTitle = messages[0].content.substring(0, 30) + '...';
+        console.log(`[useChatApi] Error occurred, using message content as title: "${fallbackTitle}"`);
+        return fallbackTitle;
+      }
+      return 'New Chat';
     }
   };
 

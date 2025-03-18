@@ -114,6 +114,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     console.log("- initialChats:", initialChats.length);
     console.log("- chats:", chats.length);
     console.log("- activeChat:", activeChat?.id);
+    console.log("- activeChat title:", activeChat?.title);
     console.log("- isFirstLoad:", isFirstLoad);
     console.log("- currentUser:", currentUser);
     

@@ -7,11 +7,14 @@ export async function GET(request: NextRequest) {
   const user = await getCurrentUser();
   
   if (!user) {
+    console.error('API: /api/chat/history - Unauthorized access attempt, no valid user session');
     return NextResponse.json(
       { error: 'Unauthorized. Please log in to access this feature.' },
       { status: 401 }
     );
   }
+  
+  console.log('API: /api/chat/history - Authorized access for user:', user.id);
   
   try {
     const userId = user.id;
@@ -21,6 +24,7 @@ export async function GET(request: NextRequest) {
     
     if (chatId) {
       // Get a specific chat
+      console.log(`API: /api/chat/history - Fetching specific chat: ${chatId} for user: ${userId}`);
       const chat = await prisma.chat.findUnique({
         where: {
           id: chatId,
@@ -36,6 +40,7 @@ export async function GET(request: NextRequest) {
       });
       
       if (!chat) {
+        console.log(`API: /api/chat/history - Chat ${chatId} not found for user: ${userId}`);
         return NextResponse.json(
           { error: 'Chat not found.' },
           { status: 404 }
@@ -45,6 +50,16 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ chat });
     } else {
       // Get all chats for the user
+      console.log(`API: /api/chat/history - Fetching all chats for user: ${userId}`);
+      
+      // Test database connection
+      try {
+        await prisma.$queryRaw`SELECT 1`;
+      } catch (dbError) {
+        console.error('API: /api/chat/history - Database connection error:', dbError);
+        throw new Error('Database connection failed');
+      }
+      
       const chats = await prisma.chat.findMany({
         where: {
           userId: userId
@@ -61,6 +76,7 @@ export async function GET(request: NextRequest) {
         }
       });
       
+      console.log(`API: /api/chat/history - Found ${chats.length} chats for user: ${userId}`);
       return NextResponse.json({ chats });
     }
   } catch (error) {
@@ -99,7 +115,7 @@ export async function POST(request: NextRequest) {
     // Create a new chat
     const chat = await prisma.chat.create({
       data: {
-        id: `chat-${Date.now()}`,
+        id: `chat-${Date.now()}-${Math.random().toString(36).substring(2, 10)}`,
         title,
         modelId,
         userId,
@@ -242,9 +258,9 @@ export async function PUT(request: NextRequest) {
           throw new Error('Chat not found');
         }
         
-        let content: string;
-        let contentType: string;
-        let filename: string;
+        let content;
+        let contentType;
+        let filename;
         
         if (exportFormat === 'markdown') {
           // Format as markdown

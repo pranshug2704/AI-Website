@@ -5,18 +5,25 @@ import { Message } from '@/app/types';
  * This is a simple implementation that would be replaced with AI-based title generation in production
  */
 export function generateChatTitle(content: string): string {
-  if (!content || typeof content !== 'string') {
+  if (!content || typeof content !== 'string' || content.trim().length === 0) {
     return 'New Chat';
   }
   
   // Simple version that truncates the first message
-  const title = content.trim();
+  const cleanContent = content.trim();
   
-  if (title.length < 30) {
-    return title;
+  // Check if the content is just whitespace or empty
+  if (cleanContent.length === 0) {
+    return 'New Chat';
   }
   
-  return title.substring(0, 30) + '...';
+  // If the content is very short, use it directly
+  if (cleanContent.length < 30) {
+    return cleanContent;
+  }
+  
+  // Otherwise, truncate it
+  return cleanContent.substring(0, 30) + '...';
 }
 
 /**

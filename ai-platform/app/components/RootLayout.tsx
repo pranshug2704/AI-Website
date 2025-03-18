@@ -12,7 +12,9 @@ export default function RootLayout({ children }: RootLayoutProps) {
   return (
     <>
       <Navbar />
-      {children}
+      <div className="min-h-[calc(100vh-64px)] overflow-hidden">
+        {children}
+      </div>
       <Footer />
     </>
   );

@@ -5,6 +5,7 @@ import { useRouter, useParams } from 'next/navigation';
 import ChatInterface from '../components/chat/ChatInterface';
 import { useAuth } from '../lib/auth-context';
 import { Chat } from '../types';
+import RootLayout from '../components/RootLayout';
 
 // Add a reconnection mechanism for handling hot reloads
 function useReconnectionHandler() {
@@ -58,7 +59,7 @@ function useReconnectionHandler() {
 
 export default function ClientChatPage() {
   const router = useRouter();
-  const { user, loading } = useAuth();
+  const { user, loading, refreshSession } = useAuth();
   const params = useParams();
   const chatId = params?.chatId as string;
   const [chats, setChats] = useState<Chat[]>([]);
@@ -69,33 +70,73 @@ export default function ClientChatPage() {
 
   // Redirect to login if not authenticated
   useEffect(() => {
+    console.log("[ClientChatPage] Auth state:", { loading, user: !!user, userId: user?.id });
     if (!loading && !user) {
+      console.log("[ClientChatPage] No user found, redirecting to login");
       router.push('/login');
     }
   }, [user, loading, router]);
 
-  // Load all chats on first render
+  // Refresh session when component mounts to ensure we have the latest session data
+  useEffect(() => {
+    if (!loading) {
+      console.log("[ClientChatPage] Refreshing session on mount");
+      refreshSession();
+    }
+  }, [loading, refreshSession]);
+
+  // Load all chats on first render or when user changes
   useEffect(() => {
     let isMounted = true;
     
     async function fetchAllChats() {
-      if (!user) return;
+      if (!user || !user.id) {
+        console.log("[ClientChatPage] No user available, skipping chat fetch");
+        return;
+      }
+      
+      console.log("[ClientChatPage] Fetching chats for user:", user.id);
       
       try {
-        console.log("Fetching all chat history...");
+        console.log("[ClientChatPage] Fetching all chat history...");
         setIsLoadingChats(true);
-        const response = await fetch('/api/chat/history');
+        
+        // Add a timestamp to avoid caching issues
+        const timestamp = new Date().getTime();
+        const response = await fetch(`/api/chat/history?_=${timestamp}`);
         
         if (!response.ok) {
-          const error = await response.json();
-          throw new Error(error.error || 'Failed to fetch chats');
+          const errorText = await response.text();
+          console.error("[ClientChatPage] API response not OK:", response.status, errorText);
+          
+          if (response.status === 401) {
+            console.log("[ClientChatPage] Session expired, refreshing...");
+            await refreshSession();
+            if (isMounted) {
+              setError("Your session expired. Please try again.");
+            }
+            return;
+          }
+          
+          try {
+            const error = JSON.parse(errorText);
+            throw new Error(error.error || 'Failed to fetch chats');
+          } catch (e) {
+            throw new Error(`HTTP Error ${response.status}: ${errorText}`);
+          }
         }
         
         const data = await response.json();
         
         // Only update state if component is still mounted
         if (isMounted) {
-          console.log(`Fetched ${data.chats?.length || 0} chats from server`);
+          console.log(`[ClientChatPage] Fetched ${data.chats?.length || 0} chats from server`);
+          
+          if (!data.chats || data.chats.length === 0) {
+            console.log("[ClientChatPage] No chats returned from server");
+          } else {
+            console.log("[ClientChatPage] First chat from API:", data.chats[0]);
+          }
           
           // Process dates as they come as strings from the API
           const processedChats = (data.chats || []).map((chat: any) => ({
@@ -108,24 +149,17 @@ export default function ClientChatPage() {
             }))
           }));
           
+          // Add additional logging
+          console.log(`[ClientChatPage] Processed ${processedChats.length} chats`);
+          if (processedChats.length > 0) {
+            console.log('[ClientChatPage] First processed chat:', 
+              {id: processedChats[0].id, title: processedChats[0].title, msgCount: processedChats[0].messages.length});
+          }
+          
           setChats(processedChats);
           
-          // If we have chats and no active chat, set the first one as active
-          if (processedChats.length > 0 && !selectedChat) {
-            // If specific chatId is provided and found in results, use it
-            if (chatId && chatId !== 'new') {
-              const requestedChat = processedChats.find((c: any) => c.id === chatId);
-              if (requestedChat) {
-                setSelectedChat(requestedChat);
-              } else {
-                // If specified chat not found, use the first one
-                setSelectedChat(processedChats[0]);
-              }
-            } else if (chatId !== 'new') {
-              // If no specific chat requested, use the first one
-              setSelectedChat(processedChats[0]);
-            }
-          }
+          // Don't set selected chat here - let ChatInterface handle it
+          // This prevents double initialization
         }
       } catch (err) {
         console.error('Error fetching chats:', err);
@@ -146,7 +180,7 @@ export default function ClientChatPage() {
     return () => {
       isMounted = false;
     };
-  }, [user, chatId, selectedChat]);
+  }, [user, refreshSession]);
 
   if (reconnecting) {
     return (
@@ -207,6 +241,22 @@ export default function ClientChatPage() {
   }
 
   return (
-    <ChatInterface initialChats={chats} currentUser={user} />
+    <RootLayout>
+      {/* Verify chats are being passed correctly */}
+      {(() => {
+        console.log("[ClientChatPage] Rendering with chat count:", chats.length);
+        if (chats.length > 0) {
+          console.log("[ClientChatPage] First chat being passed:", 
+            {id: chats[0].id, title: chats[0].title, messages: chats[0].messages.length});
+        }
+        return null;
+      })()}
+      <ChatInterface 
+        initialChats={chats} 
+        currentUser={user}
+        initialChatId={chatId}
+        selectedChat={selectedChat}
+      />
+    </RootLayout>
   );
 }

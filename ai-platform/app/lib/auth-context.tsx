@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, ReactNode } from 'react';
+import React, { createContext, useContext, ReactNode, useCallback } from 'react';
 import { User } from '../types';
 import { useSession, signIn, signOut } from 'next-auth/react';
 import { useRouter } from 'next/navigation';
@@ -8,6 +8,7 @@ import { useRouter } from 'next/navigation';
 interface AuthContextType {
   user: User | null;
   loading: boolean;
+  refreshSession: () => Promise<void>;
   login: (email: string, password: string) => Promise<boolean>;
   register: (name: string, email: string, password: string, subscription?: 'free' | 'pro' | 'enterprise') => Promise<boolean>;
   logout: () => Promise<void>;
@@ -30,6 +31,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     usageTotal: (session.user as any).usageTotal || 0,
     usageLimit: (session.user as any).usageLimit || 100000,
   } : null;
+
+  // Add a function to refresh the session
+  const refreshSession = useCallback(async () => {
+    try {
+      console.log('[AuthContext] Forcing session refresh');
+      await fetch('/api/auth/session'); // Trigger a session refresh
+      router.refresh(); // Refresh the router
+    } catch (error) {
+      console.error('[AuthContext] Error refreshing session:', error);
+    }
+  }, [router]);
 
   const login = async (email: string, password: string): Promise<boolean> => {
     try {
@@ -174,8 +186,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     router.push('/');
   };
 
+  const value = {
+    user,
+    loading,
+    refreshSession,
+    login,
+    register,
+    logout
+  };
+
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout }}>
+    <AuthContext.Provider value={value}>
       {children}
     </AuthContext.Provider>
   );

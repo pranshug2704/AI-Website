@@ -85,15 +85,29 @@ export const authOptions: AuthOptions = {
   callbacks: {
     async jwt({ token, user }) {
       if (user) {
+        console.log('[NextAuth] Setting JWT data from user:', { 
+          id: user.id,
+          email: user.email,
+          subscription: user.subscription
+        });
         token.id = user.id;
         token.subscription = user.subscription;
         token.usageTotal = user.usageTotal;
         token.usageLimit = user.usageLimit;
+      } else {
+        console.log('[NextAuth] Using existing token:', { 
+          id: token.id,
+          email: token.email
+        });
       }
       return token;
     },
     async session({ session, token }) {
       if (session.user) {
+        console.log('[NextAuth] Setting session user from token:', { 
+          id: token.id,
+          email: token.email,
+        });
         session.user.id = token.id as string;
         session.user.subscription = token.subscription as string;
         session.user.usageTotal = token.usageTotal as number;
