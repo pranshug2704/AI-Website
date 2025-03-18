@@ -143,7 +143,7 @@ const Message: React.FC<MessageProps> = ({ message }) => {
 
   return (
     <div 
-      className={`p-4 ${
+      className={`py-3 px-2 ${
         message.role === 'user' 
           ? 'bg-gray-100 dark:bg-gray-800 border-l-4 border-primary-500' 
           : message.role === 'assistant'

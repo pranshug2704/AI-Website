@@ -69,10 +69,10 @@ const MessageList: React.FC<MessageListProps> = ({
   return (
     <div
       ref={containerRef}
-      className="flex-1 overflow-y-auto scroll-container px-4 py-2"
+      className="flex-1 overflow-y-auto scroll-container scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent hover:scrollbar-thumb-gray-400 dark:hover:scrollbar-thumb-gray-500 px-0 py-0"
       style={{ overscrollBehavior: 'contain' }}
     >
-      <div className="max-w-3xl mx-auto">
+      <div className="w-full">
         {messages.map((message) => (
           <Message
             key={message.id}
