@@ -1,17 +1,39 @@
 import 'server-only';
 import { AIModel } from '../types';
+import { getCachedApiKeys } from '../api/keys/route';
+
+// Get API keys with fallback to environment variables
+function getApiKeys() {
+  try {
+    return getCachedApiKeys();
+  } catch (error) {
+    console.log('Using environment variables for API keys (cache not available)');
+    return {
+      openai: process.env.OPENAI_API_KEY || '',
+      anthropic: process.env.ANTHROPIC_API_KEY || '',
+      google: process.env.GOOGLE_API_KEY || '',
+      mistral: process.env.MISTRAL_API_KEY || ''
+    };
+  }
+}
 
 // Utility function to check if provider is available on the server
 export function isProviderAvailable(provider: string): boolean {
+  const keys = getApiKeys();
+  
   switch (provider.toLowerCase()) {
     case 'openai':
-      return !!process.env.OPENAI_API_KEY;
+      return !!keys.openai && keys.openai.length > 20;
     case 'anthropic':
-      return !!process.env.ANTHROPIC_API_KEY;
+      return !!keys.anthropic && keys.anthropic.length > 20;
     case 'google':
-      return !!process.env.GOOGLE_API_KEY;
+      // Google API keys are typically around 39 characters
+      const googleKey = keys.google;
+      const isValid = !!googleKey && googleKey.length >= 30;
+      console.log(`Google API key validation: ${isValid ? 'Valid format' : 'Invalid format or missing'}`);
+      return isValid;
     case 'mistral':
-      return !!process.env.MISTRAL_API_KEY;
+      return !!keys.mistral && keys.mistral.length > 20;
     default:
       return false;
   }
@@ -20,28 +42,62 @@ export function isProviderAvailable(provider: string): boolean {
 // Get all available providers on the server
 export function getAvailableProviders(): string[] {
   const allProviders = ['openai', 'anthropic', 'google', 'mistral'];
-  return allProviders.filter(provider => isProviderAvailable(provider));
+  const available = allProviders.filter(provider => isProviderAvailable(provider));
+  
+  // Debug logging for API keys
+  const keys = getApiKeys();
+  console.log('Server getAvailableProviders called. Available providers:', available);
+  console.log('Environment check - GOOGLE_API_KEY:', 
+    keys.google ? 
+    `Configured (length: ${keys.google.length})` : 
+    'Missing');
+  
+  return available;
 }
 
 // Determine the best model to use based on input and available providers
 export function routeRequest(requestedModel?: string): string {
+  // Get available providers
+  const availableProviders = getAvailableProviders();
+  console.log('Available providers in AI router:', availableProviders);
+  
   // Check if the requested model's provider is available
   if (requestedModel) {
+    console.log(`Requested model: ${requestedModel}`);
+    
     if (
       (requestedModel.startsWith('gpt-') && isProviderAvailable('openai')) ||
       (requestedModel.startsWith('claude-') && isProviderAvailable('anthropic')) ||
       (requestedModel.startsWith('gemini-') && isProviderAvailable('google')) ||
       (requestedModel.startsWith('mistral-') && isProviderAvailable('mistral'))
     ) {
+      console.log(`Requested model ${requestedModel} provider is available`);
+      
+      // Special case for Gemini Flash - ensure we use the correct model ID
+      if (requestedModel === 'gemini-flash') {
+        console.log('Converting gemini-flash to gemini-1.5-flash for API compatibility');
+        return 'gemini-1.5-flash';
+      }
+      
       return requestedModel;
+    } else {
+      console.log(`Requested model ${requestedModel} provider is NOT available`);
     }
   }
   
-  // Find the first available provider and return its model
-  const availableProviders = getAvailableProviders();
-  
+  // Always prioritize Google if it's configured
   if (availableProviders.includes('google')) {
-    return 'gemini-pro';
+    console.log('Only Google API key is available - forcing use of Google model');
+    
+    // For free tier, use Gemini 1.5 Flash
+    const userTier = process.env.USER_TIER || 'free';
+    if (userTier === 'free') {
+      console.log('Selected Google model: Gemini 1.5 Flash');
+      return 'gemini-1.5-flash';
+    } else {
+      console.log('Selected Google model: Gemini Pro');
+      return 'gemini-pro';
+    }
   } else if (availableProviders.includes('openai')) {
     return 'gpt-3.5-turbo';
   } else if (availableProviders.includes('anthropic')) {

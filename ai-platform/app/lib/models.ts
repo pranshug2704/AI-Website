@@ -2,6 +2,11 @@ import { AIModel, TaskType } from '../types';
 // Remove server-only import
 // import { isProviderAvailable } from './ai-api';
 
+// Interface for model with availability information
+interface AIModelWithAvailability extends AIModel {
+  providerAvailable: boolean;
+}
+
 // Cache for available providers from the API
 let availableProvidersCache: string[] = [];
 
@@ -68,6 +73,16 @@ export const models: AIModel[] = [
     icon: '/icons/google.svg'
   },
   {
+    id: 'gemini-1.5-flash',
+    name: 'Gemini 1.5 Flash',
+    provider: 'Google',
+    capabilities: ['general', 'summarization'],
+    tier: 'free',
+    maxTokens: 16000,
+    description: 'Fast and cost-effective model for general purpose tasks',
+    icon: '/icons/google.svg'
+  },
+  {
     id: 'mistral-large',
     name: 'Mistral Large',
     provider: 'Mistral',
@@ -99,29 +114,55 @@ async function fetchAvailableProviders(): Promise<string[]> {
   return [];
 }
 
-// Set cache directly - useful for SSR or when we already know the available providers
-export function setAvailableProviders(providers: string[]): void {
-  availableProvidersCache = providers;
+// Set available providers - called from the server
+export function setAvailableProviders(providers: string[]) {
+  availableProvidersCache = providers.map(p => p.toLowerCase());
+  console.log('Available providers cache updated:', availableProvidersCache);
 }
 
-// Get available models based on user subscription tier
+// Get all available models for a user's tier
 export function getAvailableModels(userTier: 'free' | 'pro' | 'enterprise'): AIModel[] {
-  // Filter models based on subscription tier
+  // Log what's happening to debug
+  console.log(`Getting available models for tier: ${userTier}`);
+  console.log(`Total models before filtering: ${models.length}`);
+  console.log(`Available providers cache: ${availableProvidersCache.join(', ') || 'empty'}`);
+  
+  // Filter models by user tier
   let availableModels = models.filter(model => {
-    const tierLevel = { 'free': 1, 'pro': 2, 'enterprise': 3 };
-    const modelTierLevel = tierLevel[model.tier];
-    const userTierLevel = tierLevel[userTier];
-    
-    return modelTierLevel <= userTierLevel;
+    if (userTier === 'enterprise') return true; // Enterprise users get access to all models
+    if (userTier === 'pro') return model.tier === 'free' || model.tier === 'pro'; // Pro users get pro and free models
+    return model.tier === 'free'; // Free users only get free models
   });
   
-  // Filter based on cached provider availability
-  // We don't do async filtering here to keep this function synchronous
+  console.log(`Models after tier filtering: ${availableModels.length}`);
+  
+  // Filter models by available providers (if cache is populated)
   if (availableProvidersCache.length > 0) {
-    availableModels = availableModels.filter(model => 
-      availableProvidersCache.includes(model.provider.toLowerCase())
-    );
+    // First tag models with availability
+    const modelsWithAvailability: AIModelWithAvailability[] = availableModels.map(model => ({
+      ...model,
+      // Add a property to indicate if the model's provider is available
+      providerAvailable: availableProvidersCache.includes(model.provider.toLowerCase())
+    }));
+    
+    console.log('Models with availability:');
+    modelsWithAvailability.forEach(model => {
+      console.log(`${model.name} (${model.provider}): ${model.providerAvailable ? 'Available' : 'Not available'}`);
+    });
+    
+    // Sort models to prioritize those with available providers
+    modelsWithAvailability.sort((a, b) => {
+      if (a.providerAvailable && !b.providerAvailable) return -1;
+      if (!a.providerAvailable && b.providerAvailable) return 1;
+      return 0;
+    });
+    
+    // Remove the custom property before returning
+    availableModels = modelsWithAvailability.map(({ providerAvailable, ...cleanModel }) => cleanModel);
   }
+  
+  console.log(`Final available models: ${availableModels.length}`);
+  console.log(`Model names: ${availableModels.map(m => m.name).join(', ')}`);
   
   return availableModels;
 }

@@ -7,6 +7,8 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 import { isProviderAvailable } from './server-utils';
 // Import Mistral statically to avoid ESM issues
 import MistralClient from '@mistralai/mistralai';
+// Import API key cache
+import { getCachedApiKeys } from '../api/keys/route';
 
 // Define TokenUsage type since it's not exported from types.ts
 type TokenUsage = {
@@ -15,26 +17,65 @@ type TokenUsage = {
   totalTokens: number;
 };
 
-// Initialize clients - these will only run on the server
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY || '',
-});
-
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY || '',
-});
-
-const googleAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY || '');
-
-// Initialize Mistral client directly if API key is available
-let mistral: any = null;
-if (process.env.MISTRAL_API_KEY) {
+// Get API keys - supports both environment variables and cached values
+function getApiKeys() {
+  // Try to get from cache first
   try {
-    mistral = new MistralClient(process.env.MISTRAL_API_KEY);
-    console.log('Mistral AI client initialized directly');
+    return getCachedApiKeys();
+  } catch (error) {
+    console.log('Using environment variables for API keys (cache not available)');
+    // Fall back to environment variables
+    return {
+      openai: process.env.OPENAI_API_KEY || '',
+      anthropic: process.env.ANTHROPIC_API_KEY || '',
+      google: process.env.GOOGLE_API_KEY || '',
+      mistral: process.env.MISTRAL_API_KEY || ''
+    };
+  }
+}
+
+// Function to get an OpenAI client
+function getOpenAIClient() {
+  const keys = getApiKeys();
+  return new OpenAI({
+    apiKey: keys.openai,
+  });
+}
+
+// Function to get an Anthropic client
+function getAnthropicClient() {
+  const keys = getApiKeys();
+  return new Anthropic({
+    apiKey: keys.anthropic,
+  });
+}
+
+// Function to get a Google AI client
+function getGoogleAIClient() {
+  const keys = getApiKeys();
+  if (!keys.google || keys.google.length < 30) {
+    console.warn('Invalid or missing Google API key');
+    return null;
+  }
+  
+  try {
+    return new GoogleGenerativeAI(keys.google);
+  } catch (error) {
+    console.error('Failed to initialize Google AI client:', error);
+    return null;
+  }
+}
+
+// Function to get a Mistral client
+function getMistralClient() {
+  const keys = getApiKeys();
+  if (!keys.mistral) return null;
+  
+  try {
+    return new MistralClient(keys.mistral);
   } catch (error) {
     console.error('Failed to initialize Mistral AI client:', error);
-    mistral = null;
+    return null;
   }
 }
 
@@ -57,8 +98,12 @@ export async function* streamOpenAI(
       }
     });
 
+    // Get fresh client for each request to use latest API key
+    const openai = getOpenAIClient();
+    
     // Add debug log to check API key (only showing first/last few chars for security)
-    const apiKey = process.env.OPENAI_API_KEY || '';
+    const keys = getApiKeys();
+    const apiKey = keys.openai;
     const sanitizedKey = apiKey.length > 8 
       ? `${apiKey.substring(0, 4)}...${apiKey.substring(apiKey.length - 4)}`
       : '[missing]';
@@ -122,6 +167,11 @@ export async function* streamAnthropic(
       }
     });
     
+    // Get fresh client for each request
+    const anthropic = getAnthropicClient();
+    const keys = getApiKeys();
+    console.log(`Using Anthropic API key (present: ${!!keys.anthropic})`);
+    
     const stream = await anthropic.messages.create({
       model: modelId,
       messages: mappedMessages,
@@ -169,7 +219,21 @@ export async function* streamGoogle(
   temperature: number = 0.7
 ): AsyncGenerator<string, { usage: TokenUsage }, unknown> {
   try {
+    // Get fresh client for each request
+    const googleAI = getGoogleAIClient();
+    
+    // Verify Google AI client is properly initialized
+    if (!googleAI) {
+      console.error('Google AI client not initialized. Check API key configuration.');
+      throw new Error('Google AI services are not available. Please check your API key configuration.');
+    }
+    
     const model = googleAI.getGenerativeModel({ model: modelId });
+    
+    // Add debug logging for the Google API request
+    console.log(`Attempting Google API request with model: ${modelId}`);
+    const keys = getApiKeys();
+    console.log(`Using Google API key (present: ${!!keys.google}, length: ${keys.google?.length || 0})`);
     
     // Convert our message format to Google's chat format
     const chatHistory: any[] = [];
@@ -179,10 +243,50 @@ export async function* streamGoogle(
       if (msg.role === 'system') {
         systemMessage += msg.content + '\n';
       } else {
-        chatHistory.push({
-          role: msg.role === 'user' ? 'user' : 'model',
-          parts: [{ text: msg.content }]
-        });
+        // Create message parts array
+        const parts: any[] = [];
+        
+        // Add text content if not empty
+        if (msg.content.trim()) {
+          parts.push({ text: msg.content });
+          // Log for debugging
+          if (msg.role === 'user' && msg.images && msg.images.length > 0) {
+            console.log('Adding text content to message with images:', msg.content.substring(0, 50) + (msg.content.length > 50 ? '...' : ''));
+          }
+        }
+        
+        // Add images if present
+        if (msg.images && msg.images.length > 0 && msg.role === 'user') {
+          console.log(`Adding ${msg.images.length} images to message parts`);
+          msg.images.forEach((img, index) => {
+            if (img.data) {
+              // For base64 data
+              console.log(`Adding image ${index + 1} with data length: ${img.data.length}`);
+              parts.push({
+                inlineData: {
+                  data: img.data,
+                  mimeType: img.mimeType || 'image/jpeg'
+                }
+              });
+            } else if (img.url) {
+              // For image URLs
+              console.log(`Adding image ${index + 1} with URL: ${img.url}`);
+              parts.push({
+                fileData: {
+                  fileUri: img.url,
+                  mimeType: img.mimeType || 'image/jpeg'
+                }
+              });
+            }
+          });
+        }
+        
+        if (parts.length > 0) {
+          chatHistory.push({
+            role: msg.role === 'user' ? 'user' : 'model',
+            parts
+          });
+        }
       }
     });
     
@@ -203,7 +307,15 @@ export async function* streamGoogle(
     });
     
     const lastMessage = chatHistory[chatHistory.length - 1];
-    const result = await chat.sendMessageStream(lastMessage.parts[0].text);
+    let result;
+
+    if (lastMessage.parts.length > 1) {
+      // If we have multiple parts (text and images), send the parts directly
+      result = await chat.sendMessageStream(lastMessage.parts);
+    } else {
+      // Otherwise just send the text
+      result = await chat.sendMessageStream(lastMessage.parts[0].text);
+    }
     
     let content = '';
     let promptTokens = 0;
@@ -243,15 +355,19 @@ export async function* streamMistral(
 ): AsyncGenerator<string, { usage: TokenUsage }, unknown> {
   console.log('Attempting to use Mistral API with model:', modelId);
   
+  // Get fresh client for each request
+  const mistral = getMistralClient();
+  
   // Check if Mistral client is available
   if (!mistral) {
     console.error('Mistral API client not initialized. Please provide a valid API key.');
     
     // Check if the API key is available but client failed
-    if (process.env.MISTRAL_API_KEY) {
+    const keys = getApiKeys();
+    if (keys.mistral) {
       console.error('Mistral API key is present but client failed to initialize.');
       // Log the first and last 4 characters of the key for verification
-      const key = process.env.MISTRAL_API_KEY;
+      const key = keys.mistral;
       const sanitizedKey = key.length > 8 
         ? `${key.substring(0, 4)}...${key.substring(key.length - 4)}`
         : '[invalid key]';
@@ -259,17 +375,56 @@ export async function* streamMistral(
       
       // Try to initialize one more time
       try {
-        mistral = new MistralClient(process.env.MISTRAL_API_KEY);
+        const retryMistral = new MistralClient(keys.mistral);
         console.log('Mistral AI client initialized on demand');
+        
+        // If we succeed, use this client
+        if (retryMistral) {
+          const mappedMessages = messages.map(m => ({
+            role: m.role === 'user' ? 'user' : m.role === 'assistant' ? 'assistant' : 'system',
+            content: m.content
+          }));
+      
+          const response = await retryMistral.chatStream({
+            model: modelId,
+            messages: mappedMessages,
+            temperature: temperature,
+            maxTokens: 2048,
+          });
+      
+          let content = '';
+          let promptTokens = 0;
+          let completionTokens = 0;
+      
+          for await (const chunk of response) {
+            if (chunk.type === 'content_block_delta') {
+              const text = chunk.delta?.text || '';
+              content += text;
+              yield text;
+              
+              // Mistral doesn't provide token counts in stream, estimate based on content
+              completionTokens += text.length / 4;
+            }
+          }
+          
+          // Estimate prompt tokens
+          promptTokens = messages.reduce((acc, msg) => acc + msg.content.length / 4, 0);
+          const totalTokens = promptTokens + completionTokens;
+          
+          return {
+            usage: {
+              promptTokens: Math.ceil(promptTokens),
+              completionTokens: Math.ceil(completionTokens),
+              totalTokens: Math.ceil(totalTokens)
+            }
+          };
+        }
       } catch (error) {
         console.error('Failed to initialize Mistral AI client on demand:', error);
-        mistral = null;
       }
     }
     
-    if (!mistral) {
-      throw new Error('Mistral API not available. Please use a different AI provider.');
-    }
+    throw new Error('Mistral API not available. Please use a different AI provider.');
   }
 
   try {
@@ -299,11 +454,11 @@ export async function* streamMistral(
         completionTokens += text.length / 4;
       }
     }
-
+    
     // Estimate prompt tokens
     promptTokens = messages.reduce((acc, msg) => acc + msg.content.length / 4, 0);
     const totalTokens = promptTokens + completionTokens;
-
+    
     return {
       usage: {
         promptTokens: Math.ceil(promptTokens),
@@ -317,26 +472,31 @@ export async function* streamMistral(
   }
 }
 
-// Main function to route to the correct API provider
+// Helper function to stream responses from any AI provider
 export async function* streamAIResponse(
   messages: Message[],
   modelId: string,
   temperature: number = 0.7
 ): AsyncGenerator<string, { usage: TokenUsage }, unknown> {
-  const model = getModelById(modelId);
-  if (!model) {
-    throw new Error(`Model with ID ${modelId} not found`);
+  if (!modelId) {
+    throw new Error('No model ID provided');
   }
   
-  console.log(`Routing request to model provider: ${model.provider} (${modelId})`);
+  console.log(`Streaming AI response for model: ${modelId}`);
   
-  // Check if the provider is available before attempting to use it
-  const provider = model.provider.toLowerCase();
-  if (!isProviderAvailable(provider)) {
-    throw new Error(
-      `The selected AI provider (${model.provider}) is not available. ` +
-      `Please set up a valid API key for ${model.provider} or select a different model.`
-    );
+  // Get API keys to determine what's available
+  const keys = getCachedApiKeys();
+  const hasOpenAI = !!keys.openai && keys.openai.length > 20;
+  const hasGoogle = !!keys.google && keys.google.length >= 30;
+  const hasAnthropic = !!keys.anthropic && keys.anthropic.length > 20;
+  const hasMistral = !!keys.mistral && keys.mistral.length > 20;
+  
+  // If only Google key is available but trying to use a non-Google model, force using gemini-pro
+  if (hasGoogle && !hasOpenAI && !hasAnthropic && !hasMistral) {
+    if (!modelId.startsWith('gemini-')) {
+      console.log(`Only Google API key is available but model ${modelId} was requested. Forcing use of gemini-pro instead.`);
+      modelId = 'gemini-pro';
+    }
   }
   
   if (modelId.startsWith('gpt-')) {
@@ -348,6 +508,41 @@ export async function* streamAIResponse(
   } else if (modelId.startsWith('mistral-')) {
     return yield* streamMistral(messages, modelId, temperature);
   } else {
-    throw new Error(`Unsupported model provider for ID: ${modelId}`);
+    throw new Error(`Unsupported model: ${modelId}`);
+  }
+}
+
+// Detect available models for the given Google API key
+export async function detectGoogleModels(): Promise<string[]> {
+  try {
+    const googleAI = getGoogleAIClient();
+    if (!googleAI) {
+      console.warn('Cannot detect Google models: Invalid or missing API key');
+      return [];
+    }
+    
+    // Unfortunately, the Google Generative AI SDK doesn't have a listModels method
+    // We'll check if we can create a model instance for common models to verify availability
+    const commonModels = ['gemini-pro', 'gemini-1.5-flash', 'gemini-1.5-pro'];
+    const availableModels: string[] = [];
+    
+    for (const modelId of commonModels) {
+      try {
+        // Try to create a model instance - this will throw if the model isn't available
+        const model = googleAI.getGenerativeModel({ model: modelId });
+        
+        // If we get here, the model is available
+        console.log(`Verified Google model available: ${modelId}`);
+        availableModels.push(modelId);
+      } catch (error) {
+        console.log(`Google model not available: ${modelId}`, error);
+      }
+    }
+    
+    // Return the verified models
+    return availableModels;
+  } catch (error) {
+    console.error('Error detecting Google models:', error);
+    return [];
   }
 }

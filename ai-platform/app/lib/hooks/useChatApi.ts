@@ -1,167 +1,181 @@
 import { Chat, Message, AIModel } from '@/app/types';
 import { generateChatTitle } from '@/app/lib/chat-utils';
 
+// Extended Message type to include properties for tracking API interactions
+interface ExtendedMessage extends Message {
+  provider?: string;
+  tokenUsage?: any;
+  completed?: boolean;
+}
+
 export const useChatApi = () => {
   // Stream response from API
   const streamResponse = async (
     chat: Chat,
-    aiMessage: Message,
-    onUpdate: (updatedMessage: Message) => void,
-    onComplete: (finalMessage: Message) => void,
+    message: ExtendedMessage,
+    onUpdate: (message: ExtendedMessage) => void,
+    onComplete: (message: ExtendedMessage) => void,
     onError: (error: Error) => void,
     selectedModelId?: string
   ) => {
     try {
+      // Prepare messages for the API
+      const apiMessages = chat.messages.map(msg => ({
+        ...msg,
+        // Keep images for user messages only - they're the only ones that can have images
+        images: msg.role === 'user' ? msg.images : undefined
+      }));
+      
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          messages: chat.messages,
-          modelId: selectedModelId,
+          messages: apiMessages,
+          modelId: selectedModelId || chat.modelId,
         }),
       });
       
       if (!response.ok) {
-        // Try to extract detailed error message from response
+        let errorMessage = `Server error: ${response.status}`;
         try {
           const errorData = await response.json();
-          if (errorData && errorData.error) {
-            throw new Error(errorData.error);
+          if (errorData.error) {
+            errorMessage = errorData.error;
           }
-        } catch (parseError) {
-          // If we can't parse the error JSON, fall back to status code
-          console.error('Error parsing error response:', parseError);
+        } catch (e) {
+          // If JSON parsing fails, provide a more specific error based on status code
+          if (response.status === 401) {
+            errorMessage = "Authentication error. Please log in again.";
+          } else if (response.status === 403) {
+            errorMessage = "You've reached your usage limit. Please upgrade your plan.";
+          }
         }
         
-        throw new Error(`API error: ${response.status} - ${response.statusText}`);
+        throw new Error(errorMessage);
       }
-      
+
+      // Set up event source
       const reader = response.body?.getReader();
-      const decoder = new TextDecoder();
-      
       if (!reader) {
-        throw new Error('Response body is null');
+        throw new Error('Failed to get response reader');
       }
       
-      let aiContent = '';
-      let modelId = selectedModelId;
-      let usage = undefined;
+      let receivedMessage = '';
+      let decoder = new TextDecoder();
+      let done = false;
       
-      while (true) {
-        const { done, value } = await reader.read();
+      // Variables to store model information
+      let modelId = selectedModelId || chat.modelId;
+      let modelName = '';
+      
+      // Define providers that need API keys
+      const providersRequiringKeys = ['openai', 'anthropic', 'google', 'mistral'];
+      
+      while (!done) {
+        const { value, done: readerDone } = await reader.read();
+        done = readerDone;
         
-        if (done) {
-          break;
-        }
-        
-        const chunk = decoder.decode(value);
-        const lines = chunk.split('\n\n');
-        
-        for (const line of lines) {
-          if (!line.trim() || !line.startsWith('data: ')) {
-            continue;
-          }
+        if (value) {
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\n\n');
           
-          try {
-            const jsonStr = line.replace('data: ', '');
-            const data = JSON.parse(jsonStr);
-            
-            if (data.event === 'metadata') {
-              // Handle metadata
-              modelId = data.data.modelId;
-            } else if (data.event === 'chunk') {
-              // Handle content chunk
-              aiContent += data.data.content;
-              
-              // Call the update callback with the updated message
-              onUpdate({
-                ...aiMessage,
-                content: aiContent,
-                modelId,
-                loading: true,
-              });
-            } else if (data.event === 'usage') {
-              // Handle usage information
-              usage = data.data;
-            } else if (data.event === 'error') {
-              // Handle server-side error event
-              let errorMsg = data.data.message || 'Unknown error from AI service';
-              
-              // Create more user-friendly error messages
-              if (errorMsg.includes('API provider') && errorMsg.includes('not available')) {
-                errorMsg = `${errorMsg} Please check your settings or try a different model.`;
-              } else if (errorMsg.includes('API key')) {
-                errorMsg = `The AI provider is not properly configured. ${errorMsg}`;
+          for (const line of lines) {
+            if (line.startsWith('data: ')) {
+              const data = line.slice(6);
+              try {
+                const parsedData = JSON.parse(data);
+                
+                // Handle different event types
+                switch (parsedData.event) {
+                  case 'metadata':
+                    console.log('Model metadata:', parsedData.data);
+                    // Store model information
+                    if (parsedData.data.modelId) modelId = parsedData.data.modelId;
+                    if (parsedData.data.modelName) modelName = parsedData.data.modelName;
+                    // Check if this provider requires an API key
+                    const provider = parsedData.data.provider.toLowerCase();
+                    if (providersRequiringKeys.includes(provider)) {
+                      // This will be used later if we get an error
+                      message.provider = provider;
+                    }
+                    break;
+                    
+                  case 'chunk':
+                    receivedMessage += parsedData.data.content;
+                    onUpdate({
+                      ...message,
+                      content: receivedMessage,
+                    });
+                    break;
+                    
+                  case 'usage':
+                    console.log('Token usage:', parsedData.data);
+                    message.tokenUsage = parsedData.data;
+                    break;
+                    
+                  case 'error':
+                    let errorMsg = parsedData.data.message || 'Unknown error occurred';
+                    
+                    // Enhance error messages with provider context if available
+                    if (message.provider) {
+                      if (errorMsg.includes('API key')) {
+                        errorMsg = `The ${message.provider} API key is missing or invalid. Please configure it in your settings.`;
+                      } else if (errorMsg.includes('not available')) {
+                        errorMsg = `The ${message.provider} service is currently not available. Please try another model.`;
+                      }
+                    }
+                    
+                    throw new Error(errorMsg);
+                    
+                  case 'done':
+                    done = true;
+                    break;
+                    
+                  default:
+                    console.log('Unknown event type:', parsedData.event);
+                }
+              } catch (e) {
+                console.error('Error parsing SSE data:', e);
               }
-              
-              throw new Error(errorMsg);
-            } else if (data.event === 'done') {
-              // Handle stream completion
-              const finalMessage = {
-                ...aiMessage,
-                content: aiContent || 'AI response completed but no content was generated.',
-                modelId,
-                usage,
-                loading: false,
-              };
-              
-              // Call the complete callback with the final message
-              onComplete(finalMessage);
-              return finalMessage;
             }
-          } catch (error) {
-            console.error('Error parsing SSE data:', error);
-            throw error; // Rethrow to be caught by the outer catch
           }
         }
       }
       
-      // If we reach here, the stream ended without a 'done' event
-      const finalMessage = {
-        ...aiMessage,
-        content: aiContent || 'The AI response was cut off unexpectedly.',
-        modelId,
-        usage,
-        loading: false,
-      };
-      
-      onComplete(finalMessage);
-      return finalMessage;
-    } catch (error) {
-      console.error('Error streaming response:', error);
-      
-      // Create a user-friendly error message
-      let errorMessage = 'An error occurred while communicating with the AI service.';
-      
-      if (error instanceof Error) {
-        // Extract the most user-friendly part of the error message
-        if (error.message.includes('API key')) {
-          errorMessage = 'The selected AI provider is not properly configured. Please try a different model.';
-        } else if (error.message.includes('provider not available') || error.message.includes('AI provider')) {
-          errorMessage = error.message;
-        } else if (error.message.startsWith('API error:')) {
-          errorMessage = error.message;
-        } else {
-          errorMessage = `Error: ${error.message}`;
-        }
+      // Format final message content properly
+      if (!receivedMessage.trim()) {
+        receivedMessage = "I couldn't generate a response. Please try again or select a different model.";
       }
       
-      // Update the message with the error
-      const errorResponse = {
-        ...aiMessage,
-        content: errorMessage,
-        role: 'error' as const,
+      // Complete the message with model information
+      onComplete({
+        ...message,
+        content: receivedMessage,
         loading: false,
-      };
+        completed: true,
+        modelId: modelId, // Include the model ID
+      });
+      
+    } catch (error) {
+      console.error('Stream response error:', error);
+      
+      // Create user-friendly error message
+      let errorMessage = error instanceof Error ? error.message : 'An unknown error occurred';
+      
+      // Make messages more user-friendly based on error content
+      if (errorMessage.includes('API key')) {
+        // If we captured the provider earlier, use it in the message
+        const provider = message.provider || 'selected AI provider';
+        errorMessage = `The selected AI provider is not properly configured. Please try a different model or configure the ${provider} API key in your settings.`;
+      } else if (errorMessage.includes('429') || errorMessage.includes('too many requests')) {
+        errorMessage = 'The AI provider is experiencing high traffic. Please try again later.';
+      } else if (errorMessage.includes('500')) {
+        errorMessage = 'The AI provider encountered a server error. Please try again or select a different model.';
+      }
       
       onError(new Error(errorMessage));
-      
-      // Also update the UI with the error message
-      onComplete(errorResponse);
-      
-      throw error;
     }
   };
 

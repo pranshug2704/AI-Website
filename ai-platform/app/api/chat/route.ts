@@ -4,6 +4,7 @@ import { routeAIRequest } from '@/app/lib/ai-router';
 import { Message } from '@/app/types';
 import { isProviderAvailable, getAvailableProviders } from '@/app/lib/server-utils';
 import { getCurrentUser, hasEnoughTokens, updateUserTokenUsage } from '@/app/lib/server-auth';
+import { getCachedApiKeys } from '../keys/route';
 
 export async function POST(request: NextRequest) {
   // Log available providers for debugging
@@ -11,16 +12,13 @@ export async function POST(request: NextRequest) {
   console.log('Available AI providers:', providers);
   
   // Check provider API keys (without showing full keys)
-  const openaiKey = process.env.OPENAI_API_KEY || '';
-  const anthropicKey = process.env.ANTHROPIC_API_KEY || '';
-  const googleKey = process.env.GOOGLE_API_KEY || '';
-  const mistralKey = process.env.MISTRAL_API_KEY || '';
+  const keys = getCachedApiKeys();
   
   console.log('API keys available:', {
-    openai: openaiKey ? `${openaiKey.substring(0, 4)}...${openaiKey.substring(openaiKey.length - 4)}` : 'missing',
-    anthropic: anthropicKey ? `${anthropicKey.substring(0, 4)}...${anthropicKey.substring(anthropicKey.length - 4)}` : 'missing',
-    google: googleKey ? `${googleKey.substring(0, 4)}...${googleKey.substring(googleKey.length - 4)}` : 'missing',
-    mistral: mistralKey ? `${mistralKey.substring(0, 4)}...${mistralKey.substring(mistralKey.length - 4)}` : 'missing'
+    openai: keys.openai ? `${keys.openai.substring(0, 4)}...${keys.openai.substring(keys.openai.length - 4)}` : 'missing',
+    anthropic: keys.anthropic ? `${keys.anthropic.substring(0, 4)}...${keys.anthropic.substring(keys.anthropic.length - 4)}` : 'missing',
+    google: keys.google ? `${keys.google.substring(0, 4)}...${keys.google.substring(keys.google.length - 4)}` : 'missing',
+    mistral: keys.mistral ? `${keys.mistral.substring(0, 4)}...${keys.mistral.substring(keys.mistral.length - 4)}` : 'missing'
   });
   
   // Check if user is authenticated
@@ -58,6 +56,16 @@ export async function POST(request: NextRequest) {
       );
     }
     
+    // Log if the message contains images
+    console.log('Message has images:', !!latestUserMessage.images && latestUserMessage.images.length > 0);
+    if (latestUserMessage.images && latestUserMessage.images.length > 0) {
+      console.log(`Processing message with ${latestUserMessage.images.length} images`);
+      console.log('First image data length:', latestUserMessage.images[0].data?.length || 'no data');
+      console.log('Message content type:', latestUserMessage.contentType);
+      console.log('Message content length:', latestUserMessage.content.length);
+      console.log('Message content preview:', latestUserMessage.content.substring(0, 50) + (latestUserMessage.content.length > 50 ? '...' : ''));
+    }
+    
     // Estimate token usage
     const estimatedPromptTokens = Math.ceil(
       messages.reduce((acc, msg) => acc + msg.content.length, 0) / 4
@@ -71,12 +79,33 @@ export async function POST(request: NextRequest) {
       );
     }
     
+    // CRITICAL FIX: If Google is the only provider with a key, force use a Google model
+    let preferredModelId = modelId;
+    if (providers.length === 1 && providers[0] === 'google') {
+      if (!modelId || !modelId.startsWith('gemini-')) {
+        preferredModelId = 'gemini-pro';
+        console.log(`Only Google API key is available - forcing use of ${preferredModelId} instead of ${modelId || 'default'}`);
+      }
+    }
+    
     // Route the request to the appropriate model
     const { selectedModel, segmentedPrompts, taskType } = routeAIRequest({
       prompt: latestUserMessage.content,
       userTier: user.subscription,
-      preferredModelId: modelId
+      preferredModelId,
+      images: latestUserMessage.images
     });
+    
+    // Verify one more time that we have an API key for the selected model
+    const providerHasKey = isProviderAvailable(selectedModel.provider);
+    if (!providerHasKey) {
+      return NextResponse.json(
+        { 
+          error: `The selected model (${selectedModel.name}) requires an API key for ${selectedModel.provider} which is not configured. Please choose a different model or configure the API key in settings.`
+        },
+        { status: 400 }
+      );
+    }
     
     // Set up response as a streaming response
     const encoder = new TextEncoder();

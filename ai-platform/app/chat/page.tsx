@@ -1,35 +1,58 @@
 'use client';
 
-import dynamic from 'next/dynamic';
+import { useEffect } from 'react';
+import { useRouter } from 'next/navigation';
+import { useAuth } from '../lib/auth-context';
 import RootLayout from '../components/RootLayout';
 
-// Import client-side components with dynamic import to avoid server/client mismatch
-const ChatPage = dynamic(() => import('./client-page'), {
-  ssr: false,
-  loading: () => (
-    <div className="min-h-screen bg-gray-100 dark:bg-gray-800 pt-16 flex items-center justify-center">
-      <div className="bg-white dark:bg-gray-900 rounded-lg shadow-lg p-8 text-center">
-        <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-primary-100 dark:bg-primary-900 flex items-center justify-center">
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-8 w-8 text-primary-600 dark:text-primary-300 animate-pulse" viewBox="0 0 20 20" fill="currentColor">
-            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-3a1 1 0 00-.867.5 1 1 0 11-1.731-1A3 3 0 0113 8a3.001 3.001 0 01-2 2.83V11a1 1 0 11-2 0v-1a1 1 0 011-1 1 1 0 100-2zm0 8a1 1 0 100-2 1 1 0 000 2z" clipRule="evenodd" />
-          </svg>
-        </div>
-        <h2 className="text-2xl font-semibold text-gray-900 dark:text-white mb-2">
-          Loading Chat Interface
-        </h2>
-        <p className="text-gray-600 dark:text-gray-400">
-          Please wait while we connect to your account...
-        </p>
-      </div>
-    </div>
-  )
-});
+export default function ChatRedirectPage() {
+  const router = useRouter();
+  const { user, loading } = useAuth();
 
-export default function ChatPageWrapper() {
+  useEffect(() => {
+    async function redirectToChat() {
+      if (!user) {
+        if (!loading) {
+          router.push('/login');
+        }
+        return;
+      }
+
+      try {
+        // Fetch user's chats
+        const response = await fetch('/api/chat/history');
+        
+        if (!response.ok) {
+          throw new Error('Failed to fetch chats');
+        }
+        
+        const data = await response.json();
+        
+        if (data.chats && data.chats.length > 0) {
+          // Redirect to the most recent chat
+          router.push(`/chat/${data.chats[0].id}`);
+        } else {
+          // No chats exist, redirect to new chat page
+          router.push('/chat/new');
+        }
+      } catch (error) {
+        console.error('Error fetching chats for redirect:', error);
+        // On error, redirect to new chat
+        router.push('/chat/new');
+      }
+    }
+
+    redirectToChat();
+  }, [user, loading, router]);
+
   return (
     <RootLayout>
-      <div className="flex-1 flex flex-col h-[calc(100vh-4rem)] bg-gray-50 dark:bg-gray-900">
-        <ChatPage />
+      <div className="flex-1 flex items-center justify-center h-[calc(100vh-4rem)] bg-gray-50 dark:bg-gray-900">
+        <div className="bg-white dark:bg-gray-800 p-8 rounded-lg shadow-md max-w-md w-full text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-primary-500 mx-auto mb-4"></div>
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">Loading Your Chats</h2>
+          <p className="text-gray-600 dark:text-gray-300">Please wait while we connect to your account...</p>
+        </div>
       </div>
     </RootLayout>
   );

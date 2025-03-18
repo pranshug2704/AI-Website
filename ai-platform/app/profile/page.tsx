@@ -101,17 +101,17 @@ export default function ProfilePage() {
                     <div className="flex justify-between items-center mb-2">
                       <span className="text-gray-700 dark:text-gray-300">Token Usage</span>
                       <span className="text-gray-900 dark:text-white font-medium">
-                        {user.usage.totalTokens.toLocaleString()} / {user.usage.limit.toLocaleString()}
+                        {user.usage?.totalTokens ? user.usage.totalTokens.toLocaleString() : '0'} / {user.usage?.limit ? user.usage.limit.toLocaleString() : '10,000'}
                       </span>
                     </div>
                     <div className="w-full bg-gray-200 dark:bg-gray-600 rounded-full h-2.5">
                       <div 
                         className="bg-primary-600 dark:bg-primary-500 h-2.5 rounded-full" 
-                        style={{ width: `${Math.min(100, (user.usage.totalTokens / user.usage.limit) * 100)}%` }}
+                        style={{ width: `${Math.min(100, user.usage?.totalTokens && user.usage?.limit ? (user.usage.totalTokens / user.usage.limit) * 100 : 0)}%` }}
                       ></div>
                     </div>
                     <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
-                      {Math.round((1 - user.usage.totalTokens / user.usage.limit) * 100)}% of your monthly allocation remaining
+                      {Math.round(user.usage?.totalTokens && user.usage?.limit ? (1 - user.usage.totalTokens / user.usage.limit) * 100 : 100)}% of your monthly allocation remaining
                     </p>
                   </div>
                 </div>

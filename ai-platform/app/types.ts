@@ -22,7 +22,8 @@ export type AIRequest = {
     temperature?: number;
     maxTokens?: number;
     format?: 'text' | 'json' | 'markdown';
-  }
+  };
+  images?: ImageContent[];
 }
 
 // API response type
@@ -38,6 +39,19 @@ export type AIResponse = {
   createdAt: string;
 }
 
+// Content types for messages
+export type MessageContentType = 'text' | 'image' | 'markdown' | 'multipart';
+
+// Image content for messages
+export interface ImageContent {
+  url: string;
+  alt?: string;
+  width?: number;
+  height?: number;
+  mimeType?: string;
+  data?: string; // base64 encoded image data
+}
+
 // Message types for chat
 export type MessageRole = 'user' | 'assistant' | 'system' | 'error';
 
@@ -45,6 +59,8 @@ export interface Message {
   id: string;
   role: MessageRole;
   content: string;
+  contentType?: MessageContentType;
+  images?: ImageContent[];
   createdAt: Date;
   modelId?: string;
   usage?: {
@@ -62,6 +78,7 @@ export interface Chat {
   createdAt: Date;
   updatedAt: Date;
   modelId?: string;
+  userId?: string;
 }
 
 export interface User {

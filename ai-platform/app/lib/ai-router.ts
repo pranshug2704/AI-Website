@@ -1,5 +1,13 @@
-import { AIModel, AIRequest, AIProvider, TaskType, SubscriptionTier } from '../types';
-import { getAvailableModels, getModelsForTask, detectTaskType } from './models';
+import { AIModel, AIRequest, AIProvider, TaskType, SubscriptionTier, Message } from '../types';
+import { getAvailableModels, getModelsForTask, detectTaskType, getModelById, setAvailableProviders } from './models';
+import { getAvailableProviders, isProviderAvailable, routeRequest } from './server-utils';
+import { getCachedApiKeys } from '../api/keys/route';
+import { 
+  streamOpenAI, 
+  streamAnthropic, 
+  streamGoogle, 
+  streamMistral 
+} from "./ai-api";
 
 /**
  * The AI Router is responsible for selecting the most appropriate AI model
@@ -15,6 +23,7 @@ interface RouterInput {
   preferredModelId?: string;
   preferredProvider?: AIProvider;
   taskType?: TaskType;
+  images?: any[]; // Add support for images
 }
 
 interface RouterOutput {
@@ -81,6 +90,28 @@ function segmentPrompt(prompt: string, maxTokens: number): string[] {
   return segments;
 }
 
+// Helper function to check if a provider has a valid API key
+function hasValidApiKey(provider: string): boolean {
+  try {
+    const keys = getCachedApiKeys();
+    switch (provider.toLowerCase()) {
+      case 'openai':
+        return !!keys.openai && keys.openai.length > 20;
+      case 'anthropic':
+        return !!keys.anthropic && keys.anthropic.length > 20;
+      case 'google':
+        return !!keys.google && keys.google.length >= 30;
+      case 'mistral': 
+        return !!keys.mistral && keys.mistral.length > 20;
+      default:
+        return false;
+    }
+  } catch (error) {
+    // Fall back to provider availability check
+    return isProviderAvailable(provider);
+  }
+}
+
 /**
  * Selects the most appropriate AI model based on input parameters
  */
@@ -98,10 +129,44 @@ export function routeAIRequest(input: RouterInput): RouterOutput {
     eligibleModels = getAvailableModels(userTier);
   }
   
+  // Get list of providers with API keys configured
+  const availableProviders = getAvailableProviders();
+  console.log('Available providers in AI router:', availableProviders);
+  
+  // CRITICAL FIX: If Google is the only available provider, force use of a Google model
+  if (availableProviders.length === 1 && availableProviders[0] === 'google') {
+    console.log('Only Google API key is available - forcing use of Google model');
+    // Find an eligible Google model
+    const googleModels = eligibleModels.filter(model => 
+      model.provider.toLowerCase() === 'google'
+    );
+    
+    if (googleModels.length > 0) {
+      // Use the first Google model available for this tier
+      const selectedModel = googleModels[0];
+      console.log(`Selected Google model: ${selectedModel.name}`);
+      
+      return { selectedModel, taskType };
+    }
+  }
+  
+  // Tag models with their provider availability
+  let modelsWithAvailability = eligibleModels.map(model => ({
+    model,
+    hasApiKey: availableProviders.includes(model.provider.toLowerCase())
+  }));
+  
   // If there's a preferred model and it's available, use it
   if (preferredModelId) {
-    const preferredModel = eligibleModels.find(model => model.id === preferredModelId);
-    if (preferredModel) {
+    const preferredModelWithAvailability = modelsWithAvailability.find(m => m.model.id === preferredModelId);
+    if (preferredModelWithAvailability) {
+      const preferredModel = preferredModelWithAvailability.model;
+      
+      // Warn if the model's provider doesn't have an API key
+      if (!preferredModelWithAvailability.hasApiKey) {
+        console.warn(`Selected model ${preferredModel.name} uses provider ${preferredModel.provider} which has no API key configured.`);
+      }
+      
       // Check if prompt needs to be segmented
       if (isPromptTooLarge(prompt, preferredModel)) {
         return {
@@ -116,58 +181,166 @@ export function routeAIRequest(input: RouterInput): RouterOutput {
   
   // If there's a preferred provider, filter by it
   if (preferredProvider) {
-    const providerModels = eligibleModels.filter(model => 
-      model.provider.toLowerCase() === preferredProvider.toLowerCase()
+    const providerModelsWithAvailability = modelsWithAvailability.filter(m => 
+      m.model.provider.toLowerCase() === preferredProvider.toLowerCase()
     );
-    if (providerModels.length > 0) {
-      eligibleModels = providerModels;
+    if (providerModelsWithAvailability.length > 0) {
+      modelsWithAvailability = providerModelsWithAvailability;
     }
   }
   
-  // Select the most appropriate model based on task and tier
-  // Strategy: Pick the highest-capability model available for the task
-  // For enterprise and pro users, prefer more advanced models
-  if (userTier === 'enterprise' || userTier === 'pro') {
-    // First try to find an enterprise model
-    const enterpriseModel = eligibleModels.find(model => model.tier === 'enterprise');
-    if (enterpriseModel) {
-      // Check if prompt needs to be segmented
-      if (isPromptTooLarge(prompt, enterpriseModel)) {
-        return {
-          selectedModel: enterpriseModel,
-          segmentedPrompts: segmentPrompt(prompt, (enterpriseModel.maxTokens || 4000) / 2),
-          taskType
-        };
-      }
-      return { selectedModel: enterpriseModel, taskType };
-    }
+  // Prioritize models with available API keys
+  const sortedModels = [...modelsWithAvailability].sort((a, b) => {
+    // First sort by API key availability - this is the most important factor
+    if (a.hasApiKey && !b.hasApiKey) return -1;
+    if (!a.hasApiKey && b.hasApiKey) return 1;
     
-    // Then try to find a pro model
-    const proModel = eligibleModels.find(model => model.tier === 'pro');
-    if (proModel) {
-      // Check if prompt needs to be segmented
-      if (isPromptTooLarge(prompt, proModel)) {
-        return {
-          selectedModel: proModel,
-          segmentedPrompts: segmentPrompt(prompt, (proModel.maxTokens || 4000) / 2),
-          taskType
-        };
-      }
-      return { selectedModel: proModel, taskType };
+    // If both have or don't have API keys, then sort by tier
+    const tierValue = { 'enterprise': 3, 'pro': 2, 'free': 1 };
+    return (tierValue[b.model.tier] || 0) - (tierValue[a.model.tier] || 0);
+  });
+  
+  // Debug the sorted models
+  console.log(`Sorted models: ${sortedModels.map(m => `${m.model.name} (${m.model.provider}, key: ${m.hasApiKey ? '✓' : '✗'})`).join(', ')}`);
+  
+  // Get the best model based on the sorted list
+  const bestModelWithAvailability = sortedModels[0];
+  
+  // If no API key is available for the best model, look for any model with an API key
+  if (bestModelWithAvailability && !bestModelWithAvailability.hasApiKey) {
+    const modelWithApiKey = sortedModels.find(m => m.hasApiKey);
+    if (modelWithApiKey) {
+      console.log(`Selecting model ${modelWithApiKey.model.name} because it has a configured API key`);
+      return { 
+        selectedModel: modelWithApiKey.model, 
+        taskType 
+      };
     }
   }
   
-  // Default to the first available model (which will be a free model for free users)
-  const defaultModel = eligibleModels[0];
+  if (!bestModelWithAvailability) {
+    throw new Error('No suitable AI model found for the request.');
+  }
+  
+  const selectedModel = bestModelWithAvailability.model;
+  
+  // Warn if the selected model's provider doesn't have an API key
+  if (!bestModelWithAvailability.hasApiKey) {
+    console.warn(`Selected model ${selectedModel.name} uses provider ${selectedModel.provider} which has no API key configured.`);
+  }
   
   // Check if prompt needs to be segmented
-  if (isPromptTooLarge(prompt, defaultModel)) {
+  if (isPromptTooLarge(prompt, selectedModel)) {
     return {
-      selectedModel: defaultModel,
-      segmentedPrompts: segmentPrompt(prompt, (defaultModel.maxTokens || 4000) / 2),
+      selectedModel,
+      segmentedPrompts: segmentPrompt(prompt, (selectedModel.maxTokens || 4000) / 2),
       taskType
     };
   }
   
-  return { selectedModel: defaultModel, taskType };
+  return { selectedModel, taskType };
+}
+
+// Define a type for the callback functions
+type UpdateCallback = (chunk: string) => void;
+type CompleteCallback = (finalOutput: string) => void;
+type ErrorCallback = (error: Error) => void;
+
+// Get stream function based on provider
+function getStreamFunction(provider: string) {
+  switch (provider.toLowerCase()) {
+    case 'openai':
+      return streamOpenAI;
+    case 'anthropic':
+      return streamAnthropic;
+    case 'google':
+      return streamGoogle;
+    case 'mistral':
+      return streamMistral;
+    default:
+      throw new Error(`Unsupported provider: ${provider}`);
+  }
+}
+
+// Determine provider from model ID
+function getProviderFromModelId(modelId: string): string {
+  if (modelId.startsWith('gpt-')) return 'openai';
+  if (modelId.startsWith('claude-')) return 'anthropic';
+  if (modelId.startsWith('gemini-')) return 'google';
+  if (modelId.startsWith('mistral-')) return 'mistral';
+  throw new Error(`Unknown model provider for ${modelId}`);
+}
+
+// Fix model ID for specific providers if needed
+function getCompatibleModelId(modelId: string): string {
+  // Handle special cases for model IDs that need to be adjusted for API compatibility
+  if (modelId === 'gemini-flash') {
+    console.log('Converting gemini-flash to gemini-1.5-flash for API compatibility');
+    return 'gemini-1.5-flash';
+  }
+  return modelId;
+}
+
+// Stream AI response from the appropriate provider
+export async function streamAIResponse({
+  messages,
+  model,
+  onUpdate,
+  onComplete,
+  onError,
+  temperature = 0.7
+}: {
+  messages: Message[];
+  model: AIModel;
+  onUpdate: UpdateCallback;
+  onComplete: CompleteCallback;
+  onError: ErrorCallback;
+  temperature?: number;
+}) {
+  try {
+    // Get available providers first
+    const availableProviders = getAvailableProviders();
+    
+    // Set cache for client-side components
+    setAvailableProviders(availableProviders);
+    
+    // Get model ID, using routeRequest to handle auto-selection and availability
+    let modelId = model?.id || 'auto-select';
+    
+    if (modelId === 'auto-select') {
+      modelId = routeRequest();
+    } else {
+      // Check if the selected model's provider is available
+      const provider = getProviderFromModelId(modelId);
+      if (!availableProviders.includes(provider.toLowerCase())) {
+        console.log(`Provider ${provider} for model ${modelId} is not available. Using auto-select.`);
+        modelId = routeRequest();
+      }
+    }
+    
+    // Ensure model ID is compatible with provider API
+    modelId = getCompatibleModelId(modelId);
+    
+    console.log(`Streaming AI response for model: ${modelId}`);
+    
+    // Get the right stream function based on the model ID
+    const provider = getProviderFromModelId(modelId);
+    const streamFunction = getStreamFunction(provider);
+    
+    let completeResponse = '';
+    const stream = streamFunction(messages, modelId, temperature);
+    
+    for await (const chunk of stream) {
+      completeResponse += chunk;
+      onUpdate(chunk);
+    }
+    
+    onComplete(completeResponse);
+    
+    return completeResponse;
+  } catch (error) {
+    console.error('Streaming error:', error);
+    onError(error as Error);
+    throw error;
+  }
 }

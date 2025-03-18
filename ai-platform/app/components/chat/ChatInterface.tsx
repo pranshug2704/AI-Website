@@ -1,41 +1,51 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import MessageList from './MessageList';
 import ChatInput from './ChatInput';
 import ChatSidebar from './ChatSidebar';
 import ChatHeader from './ChatHeader';
-import { Chat, Message as MessageType, User, AIModel } from '@/app/types';
+import { Chat, Message as MessageType, User, AIModel, ImageContent } from '@/app/types';
 import { useChat } from '@/app/lib/hooks/useChat';
 import { getAvailableProviders } from '@/app/lib/client-api';
 import { setAvailableProviders } from '@/app/lib/models';
+import { useRouter } from 'next/navigation';
 
 interface ChatInterfaceProps {
   initialChats: Chat[];
   currentUser: User;
+  initialChatId?: string;
+  selectedChat?: Chat | null;
 }
 
 const ChatInterface: React.FC<ChatInterfaceProps> = ({
   initialChats,
   currentUser,
+  initialChatId,
+  selectedChat,
 }) => {
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isFirstLoad, setIsFirstLoad] = useState(true);
+  const router = useRouter();
+  const providersLoadedRef = useRef(false);
   
   // Fetch available providers on mount
   useEffect(() => {
     async function fetchProviders() {
+      if (providersLoadedRef.current) return;
+      
       try {
         const providers = await getAvailableProviders();
         // Update the providers cache in the models module
         setAvailableProviders(providers);
+        providersLoadedRef.current = true;
       } catch (error) {
         console.error('Error fetching available providers:', error);
       }
     }
     
     fetchProviders();
-  }, []);
+  }, []); // Empty dependency array - run once on mount
   
   const {
     chats,
@@ -48,16 +58,57 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     handleDeleteChat,
     sendMessage,
     handleModelChange,
-  } = useChat(initialChats, currentUser);
+  } = useChat(initialChats, currentUser, initialChatId, selectedChat);
+
+  // Initialize state from props
+  useEffect(() => {
+    console.log("INITIAL CHATS:", initialChats.length);
+    
+    // Only initialize if we haven't already set active chat
+    if (initialChats.length > 0 && !activeChat) {
+      console.log("Setting active chat from initialChats");
+      // If we have a selected chat from props, use it
+      if (selectedChat) {
+        handleSelectChat(selectedChat.id);
+      } 
+      // Otherwise use the one specified by initialChatId
+      else if (initialChatId && initialChatId !== 'new') {
+        const chat = initialChats.find(c => c.id === initialChatId);
+        if (chat) {
+          handleSelectChat(chat.id);
+        } else {
+          handleNewChat();
+        }
+      } 
+      // If no chat is specified, use the first one
+      else if (initialChatId !== 'new') {
+        handleSelectChat(initialChats[0].id);
+      }
+      // If 'new' is specified, create a new chat
+      else {
+        handleNewChat();
+      }
+    }
+    // If we don't have any chats, create a new one
+    else if (initialChats.length === 0 && !activeChat) {
+      console.log("No initial chats, creating new chat");
+      handleNewChat();
+    }
+  }, [initialChats, initialChatId, selectedChat, activeChat, handleSelectChat, handleNewChat]);
 
   // Set first load to false after component mounts
   useEffect(() => {
     setIsFirstLoad(false);
-  }, []);
+    console.log("INITIAL CHATS:", initialChats);
+    console.log("CURRENT CHATS:", chats);
+    console.log("ACTIVE CHAT:", activeChat);
+  }, [chats, activeChat, initialChats]);
 
-  // Handle sending a message
-  const handleSendMessage = (content: string) => {
-    sendMessage(content);
+  // Function to handle sending a message
+  const handleSendMessage = (content: string, images?: ImageContent[]) => {
+    if (content.trim() || (images && images.length > 0)) {
+      sendMessage(content, images);
+    }
   };
 
   if (!activeChat) {
@@ -93,14 +144,16 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
       {/* Main chat area */}
       <div className="flex flex-col flex-1 overflow-hidden">
         {/* Chat header */}
-        <ChatHeader
-          title={activeChat.title}
-          selectedModel={selectedModel}
-          isMobileSidebarOpen={isMobileSidebarOpen}
-          setIsMobileSidebarOpen={setIsMobileSidebarOpen}
-          onNewChat={handleNewChat}
-        />
-
+        <header className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
+          <ChatHeader 
+            title={activeChat?.title || 'New Chat'} 
+            selectedModel={selectedModel}
+            isMobileSidebarOpen={isMobileSidebarOpen}
+            setIsMobileSidebarOpen={setIsMobileSidebarOpen}
+            onNewChat={handleNewChat}
+          />
+        </header>
+        
         {/* Messages */}
         <MessageList 
           messages={activeChat.messages} 
@@ -108,9 +161,9 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
         />
 
         {/* Input area */}
-        <div className="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-4">
-          <ChatInput 
-            onSendMessage={handleSendMessage} 
+        <div className="border-t border-gray-200 dark:border-gray-700">
+          <ChatInput
+            onSendMessage={handleSendMessage}
             isLoading={isLoading}
             selectedModel={selectedModel}
             availableModels={availableModels}
