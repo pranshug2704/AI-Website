@@ -19,21 +19,20 @@ function getApiKeys() {
 
 // Utility function to check if provider is available on the server
 export function isProviderAvailable(provider: string): boolean {
-  const keys = getApiKeys();
+  const keys = getCachedApiKeys();
   
   switch (provider.toLowerCase()) {
     case 'openai':
-      return !!keys.openai && keys.openai.length > 20;
+      return !!keys.openai && keys.openai.length > 8;
     case 'anthropic':
-      return !!keys.anthropic && keys.anthropic.length > 20;
+      return !!keys.anthropic && keys.anthropic.length > 8;
     case 'google':
-      // Google API keys are typically around 39 characters
-      const googleKey = keys.google;
-      const isValid = !!googleKey && googleKey.length >= 30;
-      console.log(`Google API key validation: ${isValid ? 'Valid format' : 'Invalid format or missing'}`);
-      return isValid;
+      return !!keys.google && keys.google.length > 8;
     case 'mistral':
-      return !!keys.mistral && keys.mistral.length > 20;
+      return !!keys.mistral && keys.mistral.length > 8;
+    case 'ollama':
+      // Check if Ollama is running by reading from environment or config
+      return !!process.env.OLLAMA_URL || process.env.ENABLE_OLLAMA === 'true';
     default:
       return false;
   }
@@ -41,18 +40,43 @@ export function isProviderAvailable(provider: string): boolean {
 
 // Get all available providers on the server
 export function getAvailableProviders(): string[] {
-  const allProviders = ['openai', 'anthropic', 'google', 'mistral'];
-  const available = allProviders.filter(provider => isProviderAvailable(provider));
+  // Get API keys
+  const keys = getCachedApiKeys();
+  const providers: string[] = [];
+  
+  // Check for OpenAI
+  if (isProviderAvailable('openai')) {
+    providers.push('openai');
+  }
+  
+  // Check for Anthropic
+  if (isProviderAvailable('anthropic')) {
+    providers.push('anthropic');
+  }
+  
+  // Check for Google
+  if (isProviderAvailable('google')) {
+    providers.push('google');
+  }
+  
+  // Check for Mistral
+  if (isProviderAvailable('mistral')) {
+    providers.push('mistral');
+  }
+  
+  // Check for Ollama (local models)
+  if (isProviderAvailable('ollama')) {
+    providers.push('ollama');
+  }
   
   // Debug logging for API keys
-  const keys = getApiKeys();
-  console.log('Server getAvailableProviders called. Available providers:', available);
+  console.log('Server getAvailableProviders called. Available providers:', providers);
   console.log('Environment check - GOOGLE_API_KEY:', 
     keys.google ? 
     `Configured (length: ${keys.google.length})` : 
     'Missing');
   
-  return available;
+  return providers;
 }
 
 // Determine the best model to use based on input and available providers

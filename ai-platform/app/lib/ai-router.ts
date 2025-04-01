@@ -1,13 +1,13 @@
-import { AIModel, AIRequest, AIProvider, TaskType, SubscriptionTier, Message } from '../types';
-import { getAvailableModels, getModelsForTask, detectTaskType, getModelById, setAvailableProviders } from './models';
-import { getAvailableProviders, isProviderAvailable, routeRequest } from './server-utils';
+import { Message, AIModel, AIProvider, SubscriptionTier, TaskType } from '../types';
+import { getModelById, getAvailableModels, getModelsForTask, setAvailableProviders } from './models';
+import { streamAnthropic, streamGoogle, streamMistral, streamOllama, streamOpenAI } from './ai-api';
 import { getCachedApiKeys } from '../api/keys/route';
-import { 
-  streamOpenAI, 
-  streamAnthropic, 
-  streamGoogle, 
-  streamMistral 
-} from "./ai-api";
+import { getAvailableProviders } from './server-utils';
+import { detectTaskType } from './task-detection';
+import { StreamingTextResponse, LangChainStream, Message as VercelChatMessage } from 'ai';
+import { ChatOpenAI, DynamicStructuredTool, initializeAgentExecutorWithOptions } from 'langchain/agents';
+import { ChatAnthropic } from 'langchain/chat_models/anthropic';
+import { HumanMessage, AIMessage, SystemMessage } from 'langchain/schema';
 
 /**
  * The AI Router is responsible for selecting the most appropriate AI model
@@ -257,6 +257,8 @@ function getStreamFunction(provider: string) {
       return streamGoogle;
     case 'mistral':
       return streamMistral;
+    case 'ollama':
+      return streamOllama;
     default:
       throw new Error(`Unsupported provider: ${provider}`);
   }
@@ -268,6 +270,7 @@ function getProviderFromModelId(modelId: string): string {
   if (modelId.startsWith('claude-')) return 'anthropic';
   if (modelId.startsWith('gemini-')) return 'google';
   if (modelId.startsWith('mistral-')) return 'mistral';
+  if (modelId.startsWith('ollama:')) return 'ollama';
   throw new Error(`Unknown model provider for ${modelId}`);
 }
 
@@ -342,5 +345,105 @@ export async function streamAIResponse({
     console.error('Streaming error:', error);
     onError(error as Error);
     throw error;
+  }
+}
+
+// Function to handle Ollama requests
+async function handleOllamaRequest(
+  messages: Message[],
+  modelId: string
+): Promise<Response> {
+  console.log(`Handling Ollama request for model ${modelId}`);
+  
+  try {
+    const stream = streamOllama(messages, modelId);
+    return new StreamingTextResponse(
+      (async function* () {
+        for await (const chunk of stream) {
+          yield chunk;
+        }
+      })()
+    );
+  } catch (error) {
+    console.error('Error in Ollama request:', error);
+    return new Response(`Ollama error: ${error instanceof Error ? error.message : String(error)}`, { status: 500 });
+  }
+}
+
+// Function to handle AI chat requests and route them to the appropriate provider
+export async function createAIResponse(
+  messages: Message[],
+  modelId: string
+): Promise<Response> {
+  try {
+    const model = getModelById(modelId);
+    if (!model) {
+      return new Response('Model not found', { status: 404 });
+    }
+
+    const apiKeys = getCachedApiKeys();
+    let selectedModelId = modelId;
+
+    // Check if model ID starts with ollama
+    if (selectedModelId.startsWith('ollama:')) {
+      return handleOllamaRequest(messages, selectedModelId);
+    }
+    
+    // Handle fallbacks for missing API keys
+    if (selectedModelId.startsWith('gpt-')) {
+      if (!apiKeys.openai) {
+        return new Response('OpenAI API key not found', { status: 400 });
+      }
+    } else if (selectedModelId.startsWith('claude-')) {
+      if (!apiKeys.anthropic) {
+        return new Response('Anthropic API key not found', { status: 400 });
+      }
+    } else if (selectedModelId.startsWith('gemini-')) {
+      if (!apiKeys.google) {
+        return new Response('Google API key not found', { status: 400 });
+      }
+    } else if (selectedModelId.startsWith('mistral-')) {
+      if (!apiKeys.mistral) {
+        return new Response('Mistral API key not found', { status: 400 });
+      }
+    }
+
+    // Stream the response using the appropriate stream function based on model
+    let streamFunction;
+    if (selectedModelId.startsWith('gpt-')) {
+      streamFunction = streamOpenAI;
+    } else if (selectedModelId.startsWith('claude-')) {
+      streamFunction = streamAnthropic;
+    } else if (selectedModelId.startsWith('gemini-')) {
+      streamFunction = streamGoogle;
+    } else if (selectedModelId.startsWith('mistral-')) {
+      streamFunction = streamMistral;
+    } else if (selectedModelId.startsWith('ollama:')) {
+      streamFunction = streamOllama;
+    } else {
+      return new Response(`Unsupported model ID format: ${selectedModelId}`, { status: 400 });
+    }
+
+    // Use ReadableStream to create a proper response
+    return new Response(
+      new ReadableStream({
+        async start(controller) {
+          try {
+            const stream = streamFunction(messages, selectedModelId);
+            for await (const chunk of stream) {
+              const encoder = new TextEncoder();
+              controller.enqueue(encoder.encode(chunk));
+            }
+            controller.close();
+          } catch (error) {
+            console.error('Error streaming from AI:', error);
+            controller.error(error);
+          }
+        }
+      })
+    );
+  } catch (error) {
+    console.error('Error in AI router:', error);
+    return new Response(`Error: ${error instanceof Error ? error.message : String(error)}`, { status: 500 });
   }
 }

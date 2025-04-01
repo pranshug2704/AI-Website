@@ -96,8 +96,14 @@ export interface User {
   usageLimit?: number;
 }
 
-// Task types for router
-export type TaskType = 'general' | 'coding' | 'creative' | 'analysis' | 'summarization';
+// Task types for model routing
+export type TaskType = 'general' | 'code' | 'math' | 'creative' | 'vision';
 
 // AI Provider types
 export type AIProvider = 'openai' | 'anthropic' | 'google' | 'mistral';
+
+export interface TokenUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}

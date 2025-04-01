@@ -91,6 +91,37 @@ export const models: AIModel[] = [
     maxTokens: 32000,
     description: 'High-performance model with strong reasoning capabilities',
     icon: '/icons/mistral.svg'
+  },
+  // Add local Ollama models
+  {
+    id: 'ollama:llama3',
+    name: 'Llama 3 (Local)',
+    provider: 'Ollama',
+    capabilities: ['general', 'coding', 'creative', 'analysis', 'summarization'],
+    tier: 'free',
+    maxTokens: 8192,
+    description: 'Locally hosted Llama 3 model - low latency with complete privacy',
+    icon: '/icons/llama.svg'
+  },
+  {
+    id: 'ollama:deepseek',
+    name: 'DeepSeek (Local)',
+    provider: 'Ollama',
+    capabilities: ['general', 'coding', 'analysis'],
+    tier: 'free',
+    maxTokens: 8192,
+    description: 'Locally hosted DeepSeek model - excellent for coding tasks',
+    icon: '/icons/deepseek.svg'
+  },
+  {
+    id: 'ollama:mistral',
+    name: 'Mistral (Local)',
+    provider: 'Ollama',
+    capabilities: ['general', 'coding', 'analysis', 'summarization'],
+    tier: 'free',
+    maxTokens: 8192,
+    description: 'Locally hosted Mistral model - great balance of performance and speed',
+    icon: '/icons/mistral.svg'
   }
 ];
 

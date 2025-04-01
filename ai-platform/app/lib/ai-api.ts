@@ -472,6 +472,169 @@ export async function* streamMistral(
   }
 }
 
+// Helper function to check if Ollama is available
+export async function isOllamaAvailable(): Promise<boolean> {
+  const ollamaUrl = process.env.OLLAMA_URL || 'http://localhost:11434';
+  
+  try {
+    const response = await fetch(`${ollamaUrl}/api/tags`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      // Check if we got a valid response with models
+      if (data && data.models && Array.isArray(data.models)) {
+        console.log(`Ollama detected with ${data.models.length} models available`);
+        return true;
+      }
+    }
+    
+    return false;
+  } catch (error) {
+    console.error('Error checking Ollama availability:', error);
+    return false;
+  }
+}
+
+// Get available Ollama models
+export async function getAvailableOllamaModels(): Promise<string[]> {
+  const ollamaUrl = process.env.OLLAMA_URL || 'http://localhost:11434';
+  
+  try {
+    const response = await fetch(`${ollamaUrl}/api/tags`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json'
+      }
+    });
+    
+    if (response.ok) {
+      const data = await response.json();
+      if (data && data.models && Array.isArray(data.models)) {
+        return data.models.map((model: any) => model.name);
+      }
+    }
+    
+    return [];
+  } catch (error) {
+    console.error('Error fetching Ollama models:', error);
+    return [];
+  }
+}
+
+// Stream response from Ollama
+export async function* streamOllama(
+  messages: Message[],
+  modelId: string,
+  temperature: number = 0.7
+): AsyncGenerator<string, { usage: TokenUsage }, unknown> {
+  try {
+    console.log('Attempting to use Ollama API with model:', modelId);
+    
+    // Extract the actual model name from the ID
+    // Format is ollama:modelname
+    const modelName = modelId.split(':')[1] || modelId;
+    
+    // Map our messages to Ollama's format
+    const ollamaMessages = messages.map(m => ({
+      role: m.role === 'system' ? 'system' : m.role === 'user' ? 'user' : 'assistant', 
+      content: m.content
+    }));
+    
+    // Configure Ollama API URL
+    const ollamaUrl = process.env.OLLAMA_URL || 'http://localhost:11434';
+    
+    // Send request to Ollama
+    const response = await fetch(`${ollamaUrl}/api/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: modelName,
+        messages: ollamaMessages,
+        stream: true,
+        options: {
+          temperature
+        }
+      })
+    });
+    
+    if (!response.ok) {
+      throw new Error(`Ollama API error: ${response.status} ${response.statusText}`);
+    }
+    
+    // Ensure the body is readable
+    if (!response.body) {
+      throw new Error('Ollama API returned an unreadable response');
+    }
+    
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    
+    let content = '';
+    let promptTokens = 0;
+    let completionTokens = 0;
+    
+    try {
+      // Read from the stream
+      while (true) {
+        const { done, value } = await reader.read();
+        
+        if (done) {
+          break;
+        }
+        
+        // Decode and process the chunk
+        const chunk = decoder.decode(value);
+        
+        // Ollama returns JSONL - each line is a complete JSON object
+        const lines = chunk.split('\n').filter(line => line.trim());
+        
+        for (const line of lines) {
+          try {
+            const parsed = JSON.parse(line);
+            
+            if (parsed.message?.content) {
+              const newContent = parsed.message.content;
+              content += newContent;
+              completionTokens += newContent.length / 4; // Rough estimation
+              yield newContent;
+            }
+            
+            // If we have eval_count, use it for token estimation
+            if (parsed.eval_count) {
+              completionTokens = parsed.eval_count;
+            }
+          } catch (e) {
+            console.error('Error parsing Ollama response:', e);
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    
+    // Estimate prompt tokens
+    promptTokens = messages.reduce((acc, msg) => acc + msg.content.length / 4, 0);
+    
+    return {
+      usage: {
+        promptTokens: Math.ceil(promptTokens),
+        completionTokens: Math.ceil(completionTokens),
+        totalTokens: Math.ceil(promptTokens + completionTokens)
+      }
+    };
+  } catch (error) {
+    console.error('Ollama streaming error:', error);
+    throw error;
+  }
+}
+
 // Helper function to stream responses from any AI provider
 export async function* streamAIResponse(
   messages: Message[],
@@ -491,6 +654,12 @@ export async function* streamAIResponse(
   const hasAnthropic = !!keys.anthropic && keys.anthropic.length > 20;
   const hasMistral = !!keys.mistral && keys.mistral.length > 20;
   
+  // Check if this is an Ollama model first
+  if (modelId.startsWith('ollama:')) {
+    return yield* streamOllama(messages, modelId, temperature);
+  }
+  
+  // Handle other models as before
   // If only Google key is available but trying to use a non-Google model, force using gemini-pro
   if (hasGoogle && !hasOpenAI && !hasAnthropic && !hasMistral) {
     if (!modelId.startsWith('gemini-')) {

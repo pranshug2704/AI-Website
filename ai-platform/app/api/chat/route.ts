@@ -1,10 +1,16 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { Message } from '@/app/types';
+import { createAIResponse } from '@/app/lib/ai-router';
+import { getCurrentUser } from '@/app/lib/server-auth';
 import { streamAIResponse } from '@/app/lib/ai-api';
 import { routeAIRequest } from '@/app/lib/ai-router';
-import { Message } from '@/app/types';
 import { isProviderAvailable, getAvailableProviders } from '@/app/lib/server-utils';
-import { getCurrentUser, hasEnoughTokens, updateUserTokenUsage } from '@/app/lib/server-auth';
+import { hasEnoughTokens, updateUserTokenUsage } from '@/app/lib/server-auth';
 import { getCachedApiKeys } from '../keys/route';
+import { addMessageToChat, createNewChat } from '@/app/lib/db-utils';
+import { v4 as uuidv4 } from 'uuid';
+import { getServerSession } from 'next-auth';
+import { authOptions } from '@/app/api/auth/[...nextauth]/route';
 
 export async function POST(request: NextRequest) {
   // Log available providers for debugging
@@ -88,174 +94,16 @@ export async function POST(request: NextRequest) {
       }
     }
     
-    // Route the request to the appropriate model
-    const { selectedModel, segmentedPrompts, taskType } = routeAIRequest({
-      prompt: latestUserMessage.content,
-      userTier: user.subscription,
-      preferredModelId,
-      images: latestUserMessage.images
-    });
+    // Make sure we have a valid modelId, default to gpt-3.5-turbo if not specified
+    const safeModelId = modelId || 'gpt-3.5-turbo';
     
-    // Verify one more time that we have an API key for the selected model
-    const providerHasKey = isProviderAvailable(selectedModel.provider);
-    if (!providerHasKey) {
-      return NextResponse.json(
-        { 
-          error: `The selected model (${selectedModel.name}) requires an API key for ${selectedModel.provider} which is not configured. Please choose a different model or configure the API key in settings.`
-        },
-        { status: 400 }
-      );
-    }
-    
-    // Set up response as a streaming response
-    const encoder = new TextEncoder();
-    const stream = new TransformStream();
-    const writer = stream.writable.getWriter();
-    
-    // Start streaming response in the background
-    (async () => {
-      try {
-        // If the prompt needs to be segmented, handle each segment separately
-        if (segmentedPrompts && segmentedPrompts.length > 1) {
-          // Send initial metadata
-          const metadata = {
-            event: 'metadata',
-            data: {
-              modelId: selectedModel.id,
-              modelName: selectedModel.name,
-              provider: selectedModel.provider,
-              taskType,
-              segmented: true,
-              segmentCount: segmentedPrompts.length
-            }
-          };
-          await writer.write(encoder.encode(`data: ${JSON.stringify(metadata)}\n\n`));
-          
-          let totalCompletionTokens = 0;
-          
-          // Process each segment
-          for (let i = 0; i < segmentedPrompts.length; i++) {
-            // Prepare segment metadata
-            const segmentMeta = {
-              event: 'segment',
-              data: {
-                index: i + 1,
-                total: segmentedPrompts.length
-              }
-            };
-            await writer.write(encoder.encode(`data: ${JSON.stringify(segmentMeta)}\n\n`));
-            
-            // Create a message array for this segment
-            const segmentMessages: Message[] = [
-              ...messages.filter(m => m.role === 'system'),
-              {
-                id: `segment-${i}`,
-                role: 'user',
-                content: segmentedPrompts[i],
-                createdAt: new Date()
-              }
-            ];
-            
-            // Stream the response for this segment
-            const responseStream = streamAIResponse(segmentMessages, selectedModel.id);
-            
-            for await (const chunk of responseStream) {
-              const dataChunk = {
-                event: 'chunk',
-                data: { content: chunk }
-              };
-              await writer.write(encoder.encode(`data: ${JSON.stringify(dataChunk)}\n\n`));
-            }
-            
-            // Get usage info from final yield
-            const usageInfo = await responseStream.next();
-            if (usageInfo.done && usageInfo.value) {
-              totalCompletionTokens += usageInfo.value.usage.completionTokens;
-            }
-          }
-          
-          // Send final usage data
-          const usage = {
-            event: 'usage',
-            data: {
-              promptTokens: estimatedPromptTokens,
-              completionTokens: totalCompletionTokens,
-              totalTokens: estimatedPromptTokens + totalCompletionTokens
-            }
-          };
-          await writer.write(encoder.encode(`data: ${JSON.stringify(usage)}\n\n`));
-          
-          // Update user token usage
-          await updateUserTokenUsage(estimatedPromptTokens + totalCompletionTokens);
-        } else {
-          // Handle single prompt response
-          // Send initial metadata
-          const metadata = {
-            event: 'metadata',
-            data: {
-              modelId: selectedModel.id,
-              modelName: selectedModel.name,
-              provider: selectedModel.provider,
-              taskType,
-              segmented: false
-            }
-          };
-          await writer.write(encoder.encode(`data: ${JSON.stringify(metadata)}\n\n`));
-          
-          // Stream the response
-          const responseStream = streamAIResponse(messages, selectedModel.id);
-          
-          for await (const chunk of responseStream) {
-            const dataChunk = {
-              event: 'chunk',
-              data: { content: chunk }
-            };
-            await writer.write(encoder.encode(`data: ${JSON.stringify(dataChunk)}\n\n`));
-          }
-          
-          // Get usage info from final yield
-          const usageInfo = await responseStream.next();
-          if (usageInfo.done && usageInfo.value) {
-            const usage = {
-              event: 'usage',
-              data: usageInfo.value.usage
-            };
-            await writer.write(encoder.encode(`data: ${JSON.stringify(usage)}\n\n`));
-            
-            // Update user token usage
-            await updateUserTokenUsage(usageInfo.value.usage.totalTokens);
-          }
-        }
-        
-        // Send end event
-        const endEvent = { event: 'done' };
-        await writer.write(encoder.encode(`data: ${JSON.stringify(endEvent)}\n\n`));
-      } catch (error) {
-        console.error('Streaming error:', error);
-        
-        // Send error event
-        const errorEvent = {
-          event: 'error',
-          data: { message: error instanceof Error ? error.message : 'Unknown error occurred' }
-        };
-        await writer.write(encoder.encode(`data: ${JSON.stringify(errorEvent)}\n\n`));
-      } finally {
-        await writer.close();
-      }
-    })();
-    
-    return new NextResponse(stream.readable, {
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive'
-      }
-    });
+    // Stream response from AI
+    return createAIResponse(messages, safeModelId);
   } catch (error) {
-    console.error('API error:', error);
-    return NextResponse.json(
-      { error: error instanceof Error ? error.message : 'An unexpected error occurred' },
-      { status: 500 }
-    );
+    console.error('Error in chat API route:', error);
+    return new Response(JSON.stringify({ error: 'An error occurred processing your request' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 }

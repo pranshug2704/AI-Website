@@ -102,44 +102,18 @@ interface MessageProps {
   message: MessageType;
 }
 
-const processMarkdownContent = (content: string): string => {
-  if (!content) return '';
-  
-  // Trim the content
-  let processed = content.trim();
-  
-  // Replace more than 2 consecutive newlines with just 2
-  processed = processed.replace(/\n{3,}/g, '\n\n');
-  
-  // Replace a newline followed by whitespace and another newline with just 2 newlines
-  processed = processed.replace(/\n\s*\n/g, '\n\n');
-  
-  // Fix numbered lists with too much spacing - look for patterns like "1.\n\nText"
-  processed = processed.replace(/(\d+\.)\s*\n\s*\n\s*/g, '$1 ');
-  
-  // Fix bullet lists with too much spacing
-  processed = processed.replace(/([•*-])\s*\n\s*\n\s*/g, '$1 ');
-  
-  // Normalize whitespace around headings
-  processed = processed.replace(/\n\s*\n\s*(#{1,6})\s+/g, '\n\n$1 ');
-  
-  // Fix extra blank lines before lists
-  processed = processed.replace(/\n\n(\d+\.\s)/g, '\n$1');
-  processed = processed.replace(/\n\n([•*-]\s)/g, '\n$1');
-  
-  // Normalize whitespace after list markers
-  processed = processed.replace(/(\d+\.)\s{2,}/g, '$1 ');
-  processed = processed.replace(/([•*-])\s{2,}/g, '$1 ');
-  
-  return processed;
-};
-
 const Message: React.FC<MessageProps> = ({ message }) => {
   // Get model info if available
   const model = message.modelId ? getModelById(message.modelId) : null;
 
   // Determine content type
   const contentType = message.contentType || 'text';
+
+  // Log raw and processed content here
+  if (message.content) {
+    console.log(`[Message ${message.id}] Raw content:`, JSON.stringify(message.content));
+    console.log(`[Message ${message.id}] Processed content for ReactMarkdown:`, JSON.stringify(message.content.replace(/\n{3,}/g, '\n\n').trim()));
+  }
 
   return (
     <div 
@@ -179,7 +153,7 @@ const Message: React.FC<MessageProps> = ({ message }) => {
             </svg>
           ) : (
             <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2h-1V9a1 1 0 00-1-1z" clipRule="evenodd" />
+              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 011 1v4a1 1 0 11-2 0V6a1 1 0 011-1z" clipRule="evenodd" />
             </svg>
           )}
         </div>
@@ -193,6 +167,7 @@ const Message: React.FC<MessageProps> = ({ message }) => {
                 ) : 
                 message.role === 'error' ? 'Error' : 'System'}
               </h3>
+              {/* Show model info if assistant message and modelId exists, regardless of loading state */}
               {message.role === 'assistant' && model && (
                 <span 
                   className="ml-2 px-2 py-0.5 text-xs rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 inline-flex items-center"
@@ -211,7 +186,8 @@ const Message: React.FC<MessageProps> = ({ message }) => {
                 : message.createdAt.toLocaleTimeString()}
             </span>
           </div>
-          <div className="prose prose-sm dark:prose-invert max-w-none">
+          {/* Removed prose classes, rely on component overrides and basic text color */}
+          <div className="max-w-none text-gray-900 dark:text-gray-100 break-words">
             {message.loading ? (
               <div className="flex items-center space-x-2">
                 <div className="animate-pulse flex space-x-1">
@@ -219,58 +195,58 @@ const Message: React.FC<MessageProps> = ({ message }) => {
                   <div className="h-2 w-2 bg-gray-400 dark:bg-gray-600 rounded-full animation-delay-200"></div>
                   <div className="h-2 w-2 bg-gray-400 dark:bg-gray-600 rounded-full animation-delay-400"></div>
                 </div>
-                <span className="text-sm text-gray-500 dark:text-gray-400">Generating response...</span>
+                <span className="text-sm text-gray-500 dark:text-gray-400">Generating...</span>
               </div>
             ) : (
               <>
                 {/* Display content based on type */}
                 {(contentType === 'markdown' || contentType === 'text' || contentType === 'multipart') && message.content ? (
-                  <div className="whitespace-pre-wrap break-words react-markdown-content">
-                    <ReactMarkdown
-                      remarkPlugins={[remarkGfm, remarkBreaks]}
-                      rehypePlugins={[rehypeRaw, rehypeSanitize]}
-                      components={{
-                        p: ({node, children, ...props}) => {
-                          return <p className="mb-2" {...props}>{children}</p>;
-                        },
-                        strong: ({node, children, ...props}) => {
-                          return <strong className="font-bold inline" {...props}>{children}</strong>;
-                        },
-                        ol: ({node, children, ...props}) => {
-                          return <ol className="list-decimal" {...props}>{children}</ol>;
-                        },
-                        ul: ({node, children, ...props}) => {
-                          return <ul className="list-disc" {...props}>{children}</ul>;
-                        },
-                        code({node, inline, className, children, ...props}: any) {
-                          const match = /language-(\w+)/.exec(className || '');
-                          if (!inline && match) {
-                            return (
-                              <CodeBlock 
-                                language={match[1]} 
-                                code={String(children).replace(/\n$/, '')} 
-                              />
-                            );
-                          }
-                          return inline ? (
-                            <code className="px-1 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-sm" {...props}>
-                              {children}
-                            </code>
-                          ) : (
+                  <ReactMarkdown
+                    // Restore pre-processing: collapse 3+ newlines to 2
+                    children={message.content.replace(/\n{3,}/g, '\n\n').trim()}
+                    remarkPlugins={[remarkGfm]}
+                    rehypePlugins={[rehypeRaw, rehypeSanitize]}
+                    components={{
+                      p: ({node, children, ...props}) => {
+                        // Use minimal spacing for user messages, larger for assistant
+                        return <p className={`${message.role === 'user' ? 'my-1' : 'my-4'}`} {...props}>{children}</p>;
+                      },
+                      ol: ({node, children, ...props}) => {
+                        // Further increased list spacing
+                        return <ol className="not-prose list-decimal pl-5 my-4" {...props}>{children}</ol>;
+                      },
+                      ul: ({node, children, ...props}) => {
+                        // Further increased list spacing
+                        return <ul className="not-prose list-disc pl-5 my-4" {...props}>{children}</ul>;
+                      },
+                      li: ({node, children, ...props}) => {
+                        // Further increased list item spacing
+                        return <li className="not-prose my-2 leading-tight" {...props}>{children}</li>;
+                      },
+                      code({node, inline, className, children, ...props}: any) {
+                        const match = /language-(\w+)/.exec(className || '');
+                        if (!inline && match) {
+                          return (
                             <CodeBlock 
-                              language="plaintext" 
+                              language={match[1]} 
                               code={String(children).replace(/\n$/, '')} 
                             />
                           );
-                        },
-                        li: ({node, children, ...props}) => {
-                          return <li className="mb-1" {...props}>{children}</li>;
                         }
-                      }}
-                    >
-                      {processMarkdownContent(message.content)}
-                    </ReactMarkdown>
-                  </div>
+                        return inline ? (
+                          <code className="px-1 py-0.5 rounded bg-gray-100 dark:bg-gray-800 text-sm" {...props}>
+                            {children}
+                          </code>
+                        ) : (
+                          <CodeBlock 
+                            language="plaintext" 
+                            code={String(children).replace(/\n$/, '')} 
+                          />
+                        );
+                      }
+                    }}
+                  >
+                  </ReactMarkdown>
                 ) : null}
                 
                 {/* Display attached images */}

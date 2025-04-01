@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import MessageList from './MessageList';
 import ChatInput from './ChatInput';
 import ChatSidebar from './ChatSidebar';
@@ -10,6 +10,9 @@ import { getAvailableProviders } from '@/app/lib/client-api';
 import { setAvailableProviders } from '@/app/lib/models';
 import { useRouter } from 'next/navigation';
 import MobileSidebarToggle from './MobileSidebarToggle';
+import ChatHeader from './ChatHeader';
+import ModelSelector from '../main/ModelSelector';
+import LocalModelInfo from '../main/LocalModelInfo';
 
 interface ChatInterfaceProps {
   initialChats: Chat[];
@@ -134,56 +137,56 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({
     }
   };
 
+  // Extract the model ID for components that expect a string
+  const getModelId = (model: AIModel | string | undefined): string => {
+    if (!model) return '';
+    if (typeof model === 'string') return model;
+    return model.id;
+  };
+
   if (!activeChat) {
     return <div>Loading...</div>;
   }
 
   return (
-    <div className="flex h-screen bg-white dark:bg-gray-900">
-      {/* Chat sidebar */}
-      <div className={`fixed md:static w-72 h-screen bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 overflow-y-auto shadow-md md:shadow-none z-[90] transition-transform duration-300 ease-in-out ${
-        isMobileSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
-      }`}>
-        <ChatSidebar
-          chats={chats || []}
-          activeChat={activeChat}
-          onSelectChat={handleSelectChat}
-          onNewChat={handleNewChat}
-          onDeleteChat={handleDeleteChat}
-          onCloseMobileSidebar={() => setIsMobileSidebarOpen(false)}
-        />
-      </div>
-
-      {/* Main chat area */}
-      <div className="flex-1 flex flex-col h-screen md:w-[calc(100%-18rem)] bg-white dark:bg-gray-900">
-        {/* Mobile toggle for sidebar */}
-        <div className="md:hidden p-4 flex items-center border-b border-gray-200 dark:border-gray-700">
-          <MobileSidebarToggle 
-            isMobileSidebarOpen={isMobileSidebarOpen}
-            setIsMobileSidebarOpen={setIsMobileSidebarOpen}
+    <div className="flex h-screen w-full flex-col overflow-hidden bg-background">
+      <div className="flex flex-1 flex-col md:flex-row">
+        <div className={`fixed md:static w-72 h-screen bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 overflow-y-auto shadow-md md:shadow-none z-[90] transition-transform duration-300 ease-in-out ${
+          isMobileSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
+        }`}>
+          <ChatSidebar
+            chats={chats || []}
+            activeChat={activeChat}
+            onSelectChat={handleSelectChat}
+            onNewChat={handleNewChat}
+            onDeleteChat={handleDeleteChat}
+            onCloseMobileSidebar={() => setIsMobileSidebarOpen(false)}
           />
-          <h2 className="text-lg font-medium text-gray-900 dark:text-white ml-2">
-            {activeChat?.title || 'New Chat'}
-          </h2>
         </div>
         
-        {/* Messages area with constrained height to ensure input is visible - removed padding */}
-        <div className="overflow-y-auto w-full" style={{ height: 'calc(100vh - 120px)' }}>
-          <MessageList 
-            messages={activeChat?.messages || []} 
-            isFirstLoad={isFirstLoad} 
-          />
-        </div>
+        <div className="flex-1 overflow-y-auto bg-background pb-[100px]">
+          <div className="mx-auto flex max-w-3xl flex-col px-4 py-2 md:px-8">
+            <ModelSelector selectedModelId={getModelId(selectedModel)} onSelectModel={handleModelChange} />
+            
+            <LocalModelInfo selectedModelId={getModelId(selectedModel)} />
+          </div>
 
-        {/* Input area - fixed at bottom with reduced padding */}
-        <div className="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 py-2 px-0 absolute bottom-0 left-0 right-0 md:left-72">
-          <ChatInput
-            onSendMessage={handleSendMessage}
-            isLoading={isLoading}
-            selectedModel={selectedModel}
-            availableModels={availableModels}
-            onModelChange={handleModelChange}
-          />
+          <div className="overflow-y-auto w-full" style={{ height: 'calc(100vh - 120px)' }}>
+            <MessageList 
+              messages={activeChat?.messages || []} 
+              isFirstLoad={isFirstLoad} 
+            />
+          </div>
+
+          <div className="border-t border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 py-2 px-0 absolute bottom-0 left-0 right-0 md:left-72">
+            <ChatInput
+              onSendMessage={handleSendMessage}
+              isLoading={isLoading}
+              selectedModel={selectedModel}
+              availableModels={availableModels}
+              onModelChange={handleModelChange}
+            />
+          </div>
         </div>
       </div>
     </div>
