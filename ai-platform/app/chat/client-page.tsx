@@ -1,12 +1,13 @@
 'use client';
 
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { useRouter, useParams } from 'next/navigation';
-import ChatInterface from '../components/chat/ChatInterface';
-import { useChat } from '../lib/hooks/useChat';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '../lib/auth-context';
-import { Chat } from '../types';
+import { useChat } from '../lib/hooks/useChat';
+import ChatInterface from '../components/chat/ChatInterface';
+import { Chat, User, AIModel, ImageContent } from '../types';
 import RootLayout from '../components/RootLayout';
+import { getAvailableOllamaModels } from '../lib/ai-api';
 
 // Add a reconnection mechanism for handling hot reloads
 function useReconnectionHandler() {
@@ -59,398 +60,201 @@ function useReconnectionHandler() {
 }
 
 export default function ClientChatPage() {
+  const { user, loading } = useAuth();
   const router = useRouter();
-  const { user, loading, refreshSession } = useAuth();
-  const params = useParams();
-  const chatId = params?.chatId as string;
-  const [chats, setChats] = useState<Chat[]>([]);
+  const searchParams = useSearchParams();
+  const chatId = searchParams.get('id');
+  const [initialChats, setInitialChats] = useState<Chat[]>([]);
   const [selectedChat, setSelectedChat] = useState<Chat | null>(null);
-  const [isLoadingChats, setIsLoadingChats] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [availableModels, setAvailableModels] = useState<AIModel[]>([]);
+  const [selectedModel, setSelectedModel] = useState<AIModel | undefined>();
   const reconnecting = useReconnectionHandler();
-  const chatInterfaceRef = useRef<ReturnType<typeof useChat> | null>(null);
+  
+  const {
+    chats,
+    activeChat,
+    handleNewChat,
+    handleSelectChat,
+    handleDeleteChat,
+    sendMessage,
+    handleModelChange,
+    setChats,
+    setActiveChat,
+  } = useChat(initialChats, user || null, chatId || undefined, selectedChat);
 
   // Redirect to login if not authenticated
   useEffect(() => {
-    if (!user) {
-      console.log('[ClientChatPage] No user, redirecting to login');
+    if (!loading && !user) {
+      console.log('[ClientChatPage] No user found, redirecting to login');
       router.push('/login');
-      return;
     }
-  }, [user, router]);
+  }, [user, loading, router]);
 
-  // Refresh session when component mounts to ensure we have the latest session data
+  // Fetch available models
   useEffect(() => {
-    if (!loading) {
-      console.log("[ClientChatPage] Refreshing session on mount");
-      refreshSession();
-    }
-  }, [loading, refreshSession]);
-
-  // Load all chats on first render or when user changes
-  useEffect(() => {
-    let isMounted = true;
-    let fetchTimeout: NodeJS.Timeout | null = null;
-    let isFetching = false;
-    
-    async function fetchAllChats() {
-      if (!user || !user.id) {
-        console.log("[ClientChatPage] No user available, skipping chat fetch");
-        return;
-      }
-      
-      if (isFetching) {
-        console.log("[ClientChatPage] Already fetching chats, skipping duplicate request");
-        return;
-      }
-      
-      console.log("[ClientChatPage] Fetching chats for user:", user.id);
-      
+    async function fetchAvailableModels() {
       try {
-        isFetching = true;
-        console.log("[ClientChatPage] Fetching all chat history...");
-        setIsLoadingChats(true);
-        
-        // Add a timestamp to avoid caching issues
-        const timestamp = new Date().getTime();
-        const response = await fetch(`/api/chat/history?_=${timestamp}`);
-        
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error("[ClientChatPage] API response not OK:", response.status, errorText);
-          
-          if (response.status === 401) {
-            console.log("[ClientChatPage] Session expired, refreshing...");
-            await refreshSession();
-            if (isMounted) {
-              setError("Your session expired. Please try again.");
-            }
-            return;
-          }
-          
-          try {
-            const error = JSON.parse(errorText);
-            throw new Error(error.error || 'Failed to fetch chats');
-          } catch (e) {
-            throw new Error(`HTTP Error ${response.status}: ${errorText}`);
+        const response = await fetch('/api/models/available');
+        if (response.ok) {
+          const modelNames = await response.json();
+          const models: AIModel[] = modelNames.map((name: string) => ({
+            id: name,
+            name,
+            provider: name.split('-')[0],
+            capabilities: ['text'],
+            tier: 'free',
+            maxTokens: 1000,
+            description: `AI model for text generation`
+          }));
+          setAvailableModels(models);
+          if (models.length > 0) {
+            setSelectedModel(models[0]);
           }
         }
-        
-        const data = await response.json();
-        
-        // Only update state if component is still mounted
-        if (isMounted) {
-          console.log(`[ClientChatPage] Fetched ${data.chats?.length || 0} chats from server`);
-          
-          if (!data.chats || data.chats.length === 0) {
-            console.log("[ClientChatPage] No chats returned from server");
-          } else {
-            console.log("[ClientChatPage] First chat from API:", data.chats[0]);
-          }
-          
-          // Process dates as they come as strings from the API
-          const processedChats = (data.chats || [])
-            .filter((chat: any) => {
-              // Keep the chat if:
-              // 1. It has messages, or
-              // 2. It's not titled "New Chat"
-              // 3. It's not empty (no messages and no title)
-              const hasMessages = chat.messages?.length > 0;
-              const hasCustomTitle = chat.title && chat.title !== 'New Chat';
-              const isValid = hasMessages || hasCustomTitle;
-              
-              if (!isValid) {
-                console.log(`[ClientChatPage] Filtering out invalid chat:`, {
-                  id: chat.id,
-                  title: chat.title,
-                  messageCount: chat.messages?.length || 0
-                });
-              }
-              
-              return isValid;
-            })
-            .map((chat: any) => ({
-              ...chat,
-              createdAt: new Date(chat.createdAt),
-              updatedAt: new Date(chat.updatedAt),
-              messages: (chat.messages || []).map((msg: any) => ({
-                ...msg,
-                createdAt: new Date(msg.createdAt)
-              }))
-            }));
-          
-          // Add additional logging
-          console.log(`[ClientChatPage] Processed ${processedChats.length} chats after filtering empty ones`);
-          if (processedChats.length > 0) {
-            console.log('[ClientChatPage] First processed chat:', 
-              {id: processedChats[0].id, title: processedChats[0].title, msgCount: processedChats[0].messages.length});
-          }
-          
-          setChats(processedChats);
-
-          // Handle selected chat based on chatId or last active chat
-          let chatToSelect: Chat | null = null;
-          
-          // If we're on the base /chat route and have chats, use the last active or first chat
-          if (!chatId && processedChats.length > 0) {
-            console.log("[ClientChatPage] On base chat route, finding appropriate chat");
-            // Try to get last active chat from localStorage
-            const lastActiveChatData = localStorage.getItem('lastActiveChat');
-            if (lastActiveChatData) {
-              try {
-                const { chatId: lastChatId, timestamp } = JSON.parse(lastActiveChatData);
-                const now = new Date().getTime();
-                const hoursSinceLastChat = (now - timestamp) / (1000 * 60 * 60);
-                
-                console.log("[ClientChatPage] Found last active chat data:", { lastChatId, hoursSinceLastChat });
-                
-                if (hoursSinceLastChat <= 24) {
-                  chatToSelect = processedChats.find((c: Chat) => c.id === lastChatId) || null;
-                  if (chatToSelect) {
-                    console.log("[ClientChatPage] Using last active chat:", chatToSelect.id);
-                  }
-                } else {
-                  console.log("[ClientChatPage] Last active chat expired");
-                  localStorage.removeItem('lastActiveChat');
-                }
-              } catch (error) {
-                console.error("[ClientChatPage] Error parsing last active chat:", error);
-                localStorage.removeItem('lastActiveChat');
-              }
-            }
-            
-            // If no valid last active chat, use the first chat
-            if (!chatToSelect) {
-              chatToSelect = processedChats[0];
-              console.log("[ClientChatPage] Using first chat:", chatToSelect?.id || 'unknown');
-            }
-          }
-          // If we have a specific chatId, try to find that chat
-          else if (chatId && chatId !== 'new') {
-            console.log("[ClientChatPage] Looking for specific chat with ID:", chatId);
-            chatToSelect = processedChats.find((c: Chat) => c.id === chatId) || null;
-            if (chatToSelect) {
-              console.log("[ClientChatPage] Found requested chat:", chatToSelect.id);
-            } else {
-              console.log("[ClientChatPage] Requested chat not found, using first chat");
-              // If requested chat not found, use first chat
-              if (processedChats.length > 0) {
-                chatToSelect = processedChats[0];
-              }
-            }
-          }
-          // Handle explicit new chat request
-          else if (chatId === 'new') {
-            console.log("[ClientChatPage] New chat explicitly requested");
-            setSelectedChat(null);
-          }
-          
-          // Update selected chat state and URL
-          if (chatToSelect) {
-            console.log("[ClientChatPage] Setting selected chat:", chatToSelect.id);
-            setSelectedChat(chatToSelect);
-            // Store as last active chat
-            const data = {
-              chatId: chatToSelect.id,
-              timestamp: new Date().getTime()
-            };
-            localStorage.setItem('lastActiveChat', JSON.stringify(data));
-            
-            // Update URL if needed
-            if (chatId !== chatToSelect.id) {
-              console.log("[ClientChatPage] Updating URL to match selected chat");
-              router.push(`/chat/${chatToSelect.id}`);
-            }
-          }
-        }
-      } catch (err) {
-        console.error('Error fetching chats:', err);
-        if (isMounted) {
-          setError(err instanceof Error ? err.message : 'Failed to load chats');
-        }
-      } finally {
-        if (isMounted) {
-          setIsLoadingChats(false);
-          isFetching = false;
-        }
+      } catch (error) {
+        console.error('Error fetching available models:', error);
       }
     }
-    
+
     if (user) {
-      // Clear any existing timeout
-      if (fetchTimeout) {
-        clearTimeout(fetchTimeout);
-      }
-      
-      // Set a new timeout to fetch chats after a short delay
-      // This helps prevent multiple rapid fetches during initialization
-      fetchTimeout = setTimeout(() => {
-        fetchAllChats();
-      }, 100);
+      fetchAvailableModels();
     }
-    
-    return () => {
-      isMounted = false;
-      if (fetchTimeout) {
-        clearTimeout(fetchTimeout);
-      }
-    };
-  }, [user, refreshSession, chatId, router]);
+  }, [user]);
 
-  // Handle chat selection
-  const handleSelectChat = useCallback((chatId: string) => {
-    console.log('[ClientChatPage] Selecting chat:', chatId);
-    
-    // Find the chat in our list
-    const chat = chats.find(c => c.id === chatId);
-    
-    if (chat) {
-      console.log('[ClientChatPage] Found chat, updating state and URL');
-      
-      // Update selected chat state
-      setSelectedChat(chat);
-      
-      // Update URL to reflect selected chat
-      router.push(`/chat/${chatId}`);
-      
-      // Call the hook's handleSelectChat
-      chatInterfaceRef.current?.handleSelectChat(chatId);
-    } else {
-      console.error('[ClientChatPage] Chat not found with ID:', chatId);
-    }
-  }, [router, chats]);
-
-  // Initialize chat interface ref
+  // Fetch initial chats
   useEffect(() => {
-    if (!chatInterfaceRef.current && user) {
-      console.log('[ClientChatPage] Initializing chatInterfaceRef');
-      console.log('[ClientChatPage] Current state:', {
-        chatsCount: chats.length,
-        chatId,
-        selectedChat: selectedChat?.id,
-        user: user.id,
-        initialized: chatInterfaceRef.current?.initialized
-      });
-      
-      chatInterfaceRef.current = useChat(chats, user, chatId, selectedChat);
-      console.log('[ClientChatPage] chatInterfaceRef initialized:', {
-        initialized: chatInterfaceRef.current.initialized,
-        hasActiveChat: !!chatInterfaceRef.current.activeChat,
-        activeChatId: chatInterfaceRef.current.activeChat?.id
-      });
-    }
-  }, [chats, user, chatId, selectedChat]);
+    if (!user) return;
 
-  // Handle new chat creation
-  const handleNewChat = useCallback(async () => {
-    console.log('=== [ClientChatPage] Creating new chat ===');
-    console.log('[ClientChatPage] Current state:', {
-      selectedChat: selectedChat?.id,
-      chatsCount: chats.length,
-      chatId: params.chatId,
-      chatInterfaceRef: !!chatInterfaceRef.current,
-      user: user?.id,
-      initialized: chatInterfaceRef.current?.initialized
-    });
-    
-    try {
-      // Create new chat first
-      console.log('[ClientChatPage] Calling chatInterface.handleNewChat...');
-      if (!chatInterfaceRef.current) {
-        console.error('[ClientChatPage] chatInterfaceRef is not initialized');
-        return;
-      }
-      
-      const newChat = await chatInterfaceRef.current.handleNewChat();
-      console.log('[ClientChatPage] handleNewChat result:', newChat);
-      
-      if (newChat) {
-        console.log('[ClientChatPage] New chat created:', newChat.id);
-        
-        // Update chats state to include the new chat
-        console.log('[ClientChatPage] Updating chats state...');
-        setChats(prevChats => {
-          if (prevChats.some(c => c.id === newChat.id)) {
-            console.log('[ClientChatPage] Chat already exists in chats array');
-            return prevChats;
-          }
-          console.log('[ClientChatPage] Adding new chat to chats array');
-          return [newChat, ...prevChats];
+    const fetchInitialChats = async () => {
+      try {
+        console.log('[client-page] Starting to fetch chats for user:', user.id);
+        const response = await fetch('/api/chat/history');
+        if (!response.ok) {
+          throw new Error('Failed to fetch chats');
+        }
+        const data = await response.json();
+        console.log('[client-page] Fetched chats:', {
+          count: data.chats?.length || 0,
+          firstChat: data.chats?.[0] ? { id: data.chats[0].id, title: data.chats[0].title } : null
         });
         
-        // Update selected chat state
-        console.log('[ClientChatPage] Updating selected chat state...');
-        setSelectedChat(newChat);
-        
-        // Update URL after successful chat creation
-        console.log('[ClientChatPage] Updating URL...');
-        router.push(`/chat/${newChat.id}`, { scroll: false });
-        
-        // Store as last active chat
-        console.log('[ClientChatPage] Storing last active chat...');
-        const data = {
-          chatId: newChat.id,
-          timestamp: new Date().getTime()
-        };
-        localStorage.setItem('lastActiveChat', JSON.stringify(data));
-        
-        console.log('[ClientChatPage] New chat creation completed successfully');
-      } else {
-        console.error('[ClientChatPage] Failed to create new chat');
+        if (data.chats?.length > 0) {
+          // Set initialChats state
+          setInitialChats(data.chats);
+          
+          // If we have a chatId in the URL, select that chat
+          if (chatId) {
+            const selectedChat = data.chats.find((c: Chat) => c.id === chatId);
+            if (selectedChat) {
+              console.log('[client-page] Found chat with ID, selecting:', chatId);
+              setSelectedChat(selectedChat);
+            }
+          } else {
+            // Otherwise, select the first chat with messages
+            const firstChatWithMessages = data.chats.find((c: Chat) => c.messages && c.messages.length > 0);
+            if (firstChatWithMessages) {
+              console.log('[client-page] Selecting first chat with messages:', firstChatWithMessages.id);
+              setSelectedChat(firstChatWithMessages);
+            } else {
+              console.log('[client-page] No chats with messages, selecting first chat');
+              setSelectedChat(data.chats[0]);
+            }
+          }
+          
+          console.log('[client-page] Set chats state:', {
+            initialChatsCount: data.chats.length,
+            selectedChatId: chatId,
+            selectedChatTitle: selectedChat?.title
+          });
+        } else {
+          console.log('[client-page] No chats found in response');
+          setInitialChats([]);
+          setSelectedChat(null);
+        }
+        setIsLoading(false);
+      } catch (error) {
+        console.error('[client-page] Error fetching chats:', error);
+        setInitialChats([]);
+        setSelectedChat(null);
+        setIsLoading(false);
+      }
+    };
+
+    fetchInitialChats();
+  }, [user, chatId]);
+
+  // Add debug logging for chat state changes
+  useEffect(() => {
+    console.log('[client-page] Chat state updated:', {
+      initialChatsCount: initialChats?.length || 0,
+      chatsCount: chats?.length || 0,
+      activeChatId: activeChat?.id,
+      selectedChatId: selectedChat?.id,
+      isLoading
+    });
+  }, [initialChats, chats, activeChat, selectedChat, isLoading]);
+
+  // Handle chat selection
+  const handleSelectChatWrapper = useCallback(async (chatId: string) => {
+    console.log('[client-page] Selecting chat:', chatId);
+    try {
+      const response = await fetch(`/api/chats/${chatId}`);
+      if (!response.ok) {
+        throw new Error('Failed to fetch chat');
+      }
+      const chat = await response.json();
+      setActiveChat(chat);
+      setChats(prevChats => {
+        const updatedChats = prevChats?.map(c => 
+          c.id === chat.id ? chat : c
+        ) || [];
+        return updatedChats;
+      });
+      // Update URL without page reload
+      router.push(`/chat?id=${chatId}`);
+    } catch (error) {
+      console.error('[client-page] Error selecting chat:', error);
+    }
+  }, [setActiveChat, setChats, router]);
+
+  // Handle new chat creation
+  const handleNewChatWrapper = useCallback(async () => {
+    try {
+      const newChat = await handleNewChat();
+      if (newChat) {
+        router.push(`/chat?id=${newChat.id}`);
       }
     } catch (error) {
-      console.error('[ClientChatPage] Error creating new chat:', error);
+      console.error('Error creating new chat:', error);
     }
-  }, [router, selectedChat, chats, params.chatId, user]);
+  }, [handleNewChat, router]);
 
   // Handle chat deletion
-  const handleDeleteChat = useCallback(async (chatId: string) => {
-    console.log('[ClientChatPage] Deleting chat:', chatId);
-    
-    // Call the hook's handleDeleteChat
-    const success = await chatInterfaceRef.current?.handleDeleteChat(chatId);
-    
-    if (success) {
-      // If we deleted the active chat, redirect to /chat
-      if (chatInterfaceRef.current?.activeChat?.id === chatId) {
+  const handleDeleteChatWrapper = useCallback(async (chatId: string) => {
+    try {
+      await handleDeleteChat(chatId);
+      if (activeChat?.id === chatId) {
         router.push('/chat');
       }
+    } catch (error) {
+      console.error('Error deleting chat:', error);
     }
-  }, [router]);
+  }, [handleDeleteChat, activeChat, router]);
 
-  // Initialize chat selection based on URL
-  useEffect(() => {
-    const chatId = params.chatId as string;
-    console.log('[ClientChatPage] URL changed:', chatId);
-    
-    // Skip if no chat ID in URL
-    if (!chatId) {
-      console.log('[ClientChatPage] No chat ID in URL, skipping selection');
-      return;
-    }
-    
-    // If we have a chat ID, select it
-    if (chatId !== 'new') {
-      console.log('[ClientChatPage] Selecting chat from URL:', chatId);
-      const chat = chats.find(c => c.id === chatId);
-      if (chat) {
-        setSelectedChat(chat);
-        chatInterfaceRef.current?.handleSelectChat(chatId);
-      }
-    }
-  }, [params.chatId, chats]);
+  // Handle model change
+  const handleModelChangeWrapper = useCallback((modelId: string) => {
+    handleModelChange(modelId);
+  }, [handleModelChange]);
 
-  // Handle new chat creation when URL is /chat/new
-  useEffect(() => {
-    const chatId = params.chatId as string;
-    if (chatId === 'new') {
-      console.log('[ClientChatPage] New chat requested via URL');
-      // Only create a new chat if we don't already have one selected
-      if (!selectedChat) {
-        handleNewChat();
-      }
+  // Handle sending message
+  const handleSendMessageWrapper = useCallback(async (content: string, images?: ImageContent[]) => {
+    try {
+      await sendMessage(content, images);
+    } catch (error) {
+      console.error('Error sending message:', error);
     }
-  }, [params.chatId, handleNewChat, selectedChat]);
+  }, [sendMessage]);
 
   if (reconnecting) {
     return (
@@ -463,18 +267,12 @@ export default function ClientChatPage() {
     );
   }
 
-  if (error) {
+  if (loading || !user) {
     return (
-      <div className="flex h-[calc(100vh-4rem)] items-center justify-center bg-background">
-        <div className="text-center">
-          <p className="text-red-500">{error}</p>
-        </div>
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-gray-900 dark:border-white"></div>
       </div>
     );
-  }
-
-  if (!user) {
-    return null;
   }
 
   return (
@@ -488,7 +286,7 @@ export default function ClientChatPage() {
         }
         return null;
       })()}
-      {isLoadingChats ? (
+      {isLoading ? (
         <div className="h-screen flex items-center justify-center bg-gray-100 dark:bg-gray-800">
           <div className="bg-white dark:bg-gray-900 rounded-lg shadow-lg p-8 text-center">
             <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-primary-100 dark:bg-primary-900 flex items-center justify-center">
@@ -506,14 +304,20 @@ export default function ClientChatPage() {
         </div>
       ) : (
         <ChatInterface
-          ref={chatInterfaceRef}
-          initialChats={chats}
-          initialChatId={chatId}
-          selectedChat={selectedChat}
+          initialChats={initialChats}
           currentUser={user}
-          onSelectChat={handleSelectChat}
-          onNewChat={handleNewChat}
-          onDeleteChat={handleDeleteChat}
+          initialChatId={chatId as string}
+          selectedChat={selectedChat}
+          onSelectChat={handleSelectChatWrapper}
+          onNewChat={handleNewChatWrapper}
+          onDeleteChat={handleDeleteChatWrapper}
+          chats={chats}
+          activeChat={activeChat}
+          isLoading={isLoading}
+          selectedModel={selectedModel}
+          availableModels={availableModels}
+          handleModelChange={handleModelChangeWrapper}
+          sendMessage={handleSendMessageWrapper}
         />
       )}
     </RootLayout>

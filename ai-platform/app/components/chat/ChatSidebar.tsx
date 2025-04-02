@@ -6,9 +6,9 @@ import { Chat } from '@/app/types';
 interface ChatSidebarProps {
   chats: Chat[];
   activeChat: Chat | null;
-  onSelectChat: (chatId: string) => void;
+  onSelectChat: (chatId: string) => void | Promise<void>;
   onNewChat: () => void | Promise<void>;
-  onDeleteChat: (chatId: string) => void;
+  onDeleteChat: (chatId: string) => void | Promise<void>;
   onCloseMobileSidebar: () => void;
 }
 
@@ -170,6 +170,25 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
   
   const groupedChats = groupChatsByDate();
   
+  // Handle chat selection
+  const handleSelectChat = async (chatId: string) => {
+    try {
+      await onSelectChat(chatId);
+      onCloseMobileSidebar();
+    } catch (error) {
+      console.error('[ChatSidebar] Error selecting chat:', error);
+    }
+  };
+  
+  // Handle chat deletion
+  const handleDeleteChat = async (chatId: string) => {
+    try {
+      await onDeleteChat(chatId);
+    } catch (error) {
+      console.error('[ChatSidebar] Error deleting chat:', error);
+    }
+  };
+  
   return (
     <div className="flex flex-col h-full bg-white dark:bg-gray-800">
       <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
@@ -221,10 +240,7 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
                             ? 'bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300'
                             : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'
                         }`}
-                        onClick={() => {
-                          onSelectChat(chat.id);
-                          onCloseMobileSidebar();
-                        }}
+                        onClick={() => handleSelectChat(chat.id)}
                       >
                         <div className="flex items-center overflow-hidden">
                           <span className="mr-2 text-gray-500 dark:text-gray-400">
@@ -280,7 +296,7 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
                           <div className="py-1 rounded-md bg-white dark:bg-gray-800 shadow-xs border border-gray-200 dark:border-gray-700">
                             <button
                               className="w-full text-left px-4 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"
-                              onClick={() => onDeleteChat(chat.id)}
+                              onClick={() => handleDeleteChat(chat.id)}
                             >
                               Delete chat
                             </button>
@@ -310,10 +326,7 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
                             ? 'bg-primary-100 dark:bg-primary-900/30 text-primary-700 dark:text-primary-300'
                             : 'hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300'
                         }`}
-                        onClick={() => {
-                          onSelectChat(chat.id);
-                          onCloseMobileSidebar();
-                        }}
+                        onClick={() => handleSelectChat(chat.id)}
                       >
                         <div className="flex items-center overflow-hidden">
                           <span className="mr-2 text-gray-500 dark:text-gray-400">

@@ -166,7 +166,7 @@ const ChatInput: React.FC<ChatInputProps> = ({
   };
 
   // Group models by provider for better organization
-  const groupedModels = availableModels.reduce((groups, model) => {
+  const groupedModels = (availableModels || []).reduce((groups, model) => {
     const provider = model.provider;
     if (!groups[provider]) {
       groups[provider] = [];

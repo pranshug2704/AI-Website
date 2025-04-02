@@ -19,9 +19,16 @@ interface ChatInterfaceProps {
   currentUser: User;
   initialChatId?: string;
   selectedChat?: Chat | null;
-  onSelectChat?: (chatId: string) => void;
+  onSelectChat: (chatId: string) => void | Promise<void>;
   onNewChat?: () => Promise<void>;
-  onDeleteChat?: (chatId: string) => Promise<void>;
+  onDeleteChat: (chatId: string) => Promise<void>;
+  chats: Chat[];
+  activeChat: Chat | null;
+  isLoading: boolean;
+  selectedModel?: AIModel;
+  availableModels: AIModel[];
+  handleModelChange: (modelId: string) => void;
+  sendMessage: (content: string, images?: ImageContent[]) => void;
 }
 
 const ChatInterface = forwardRef<ReturnType<typeof useChat>, ChatInterfaceProps>(({
@@ -32,6 +39,13 @@ const ChatInterface = forwardRef<ReturnType<typeof useChat>, ChatInterfaceProps>
   onSelectChat,
   onNewChat,
   onDeleteChat,
+  chats,
+  activeChat,
+  isLoading,
+  selectedModel,
+  availableModels,
+  handleModelChange,
+  sendMessage,
 }, ref) => {
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   const [isFirstLoad, setIsFirstLoad] = useState(true);
@@ -99,22 +113,6 @@ const ChatInterface = forwardRef<ReturnType<typeof useChat>, ChatInterfaceProps>
     
     fetchProviders();
   }, []); // Empty dependency array - run once on mount
-  
-  const {
-    chats,
-    activeChat,
-    isLoading,
-    selectedModel,
-    availableModels,
-    handleNewChat,
-    handleSelectChat,
-    handleDeleteChat,
-    sendMessage,
-    handleModelChange,
-    setChats,
-    setActiveChat,
-    setSelectedModel,
-  } = useChat(initialChats, currentUser, initialChatId, selectedChat);
 
   // Function to handle sending a message
   const handleSendMessage = useCallback((content: string, images?: ImageContent[]) => {
@@ -145,7 +143,7 @@ const ChatInterface = forwardRef<ReturnType<typeof useChat>, ChatInterfaceProps>
   }, []);
 
   // Function to handle chat selection
-  const handleSelectChatWrapper = useCallback((chatId: string) => {
+  const handleSelectChatWrapper = useCallback(async (chatId: string) => {
     console.log('[ChatInterface] Selecting chat:', chatId);
     
     // Save current scroll position before changing chat
@@ -154,9 +152,13 @@ const ChatInterface = forwardRef<ReturnType<typeof useChat>, ChatInterfaceProps>
     // Update URL without page reload
     window.history.pushState({}, '', `/chat/${chatId}`);
     
-    // Call the hook's handleSelectChat
-    handleSelectChat(chatId);
-  }, [handleSelectChat, saveScrollPosition]);
+    // Call the parent's handleSelectChat
+    try {
+      await onSelectChat(chatId);
+    } catch (error) {
+      console.error('[ChatInterface] Error selecting chat:', error);
+    }
+  }, [onSelectChat, saveScrollPosition]);
 
   // Function to handle new chat creation
   const handleNewChatWrapper = useCallback(async () => {
@@ -165,8 +167,7 @@ const ChatInterface = forwardRef<ReturnType<typeof useChat>, ChatInterfaceProps>
       isLoading,
       hasActiveChat: !!activeChat,
       activeChatId: activeChat?.id,
-      chatsCount: chats.length,
-      hasHandleNewChat: !!handleNewChat
+      chatsCount: chats?.length || 0
     });
     
     // Prevent multiple simultaneous new chat attempts
@@ -177,24 +178,12 @@ const ChatInterface = forwardRef<ReturnType<typeof useChat>, ChatInterfaceProps>
 
     try {
       console.log('[ChatInterface] Calling handleNewChat...');
-      const newChat = await handleNewChat();
-      console.log('[ChatInterface] handleNewChat result:', newChat);
-      
-      if (newChat && newChat.id) {
-        console.log('[ChatInterface] New chat created:', newChat.id);
-        // Update URL without page reload
-        window.history.pushState({}, '', `/chat/${newChat.id}`);
-        console.log('[ChatInterface] New chat creation completed');
-      } else {
-        console.error('[ChatInterface] Failed to create new chat - invalid chat data returned');
-        throw new Error('Failed to create new chat - invalid chat data returned');
-      }
+      await onNewChat?.();
+      console.log('[ChatInterface] New chat creation completed');
     } catch (error) {
       console.error('[ChatInterface] Error creating new chat:', error);
-      // Show error state or notification to user
-      // You might want to add a toast notification or error message here
     }
-  }, [handleNewChat, isLoading, activeChat, chats]);
+  }, [onNewChat, isLoading, activeChat, chats]);
 
   // Effect to handle scroll position restoration
   useEffect(() => {
@@ -212,145 +201,84 @@ const ChatInterface = forwardRef<ReturnType<typeof useChat>, ChatInterfaceProps>
     }
   }, [activeChat, scrollPosition]);
 
-  // Expose methods via ref
-  React.useImperativeHandle(ref, () => ({
-    chats,
-    activeChat,
-    isLoading,
-    selectedModel,
-    availableModels: [], // This will be populated by the hook
-    handleNewChat,
-    handleSelectChat,
-    handleDeleteChat,
-    updateChatTitle: async (chatId: string) => {
-      // This will be implemented by the hook
-      return undefined;
-    },
-    sendMessage: async (content: string, images?: ImageContent[]) => {
-      await handleSendMessage(content, images);
-    },
-    setActiveChat: (chat: Chat | null) => {
-      if (chat) {
-        handleSelectChat(chat.id);
-      }
-    },
-    deleteChat: handleDeleteChat,
-    createNewChat: handleNewChat,
-    getModelsWithAvailability: () => {
-      // This will be implemented by the hook
-      return [];
-    },
-    handleModelChange: (modelId: string) => {
-      // This will be implemented by the hook
-    },
-    availableProviders: [],
-    setChats,
-    setSelectedModel
-  }), [chats, activeChat, isLoading, selectedModel, handleNewChat, handleSelectChat, handleDeleteChat, handleSendMessage, setChats, setSelectedModel]);
-
-  // Initialize chat on mount
+  // Effect to handle initialization
   useEffect(() => {
     console.log('[ChatInterface] Initialization effect triggered');
     console.log('[ChatInterface] Current state:', {
       hasActiveChat: !!activeChat,
       activeChatId: activeChat?.id,
       initialized: initializedRef.current,
-      initialChatsCount: initialChats.length,
+      initialChatsCount: initialChats?.length || 0,
       initialChatId,
       hasInitialSelectedChat: !!selectedChat,
       initializationState: initializationStateRef.current
     });
-    
+
     // Skip if already initialized
-    if (initializationStateRef.current.hasInitialized) {
+    if (initializedRef.current) {
       console.log('[ChatInterface] Already initialized, skipping');
       return;
     }
-    
-    // If we already have an active chat, mark as initialized
-    if (activeChat) {
-      console.log('[ChatInterface] Already have active chat, marking as initialized:', activeChat.id);
-      initializationStateRef.current.hasInitialized = true;
-      return;
-    }
-    
-    // Process in order of priority:
-    // 1. If we have an explicitly selected chat, use it
-    if (selectedChat) {
-      console.log('[ChatInterface] Using provided selected chat:', selectedChat.id);
-      handleSelectChat(selectedChat.id);
-      initializationStateRef.current.hasInitialized = true;
-      return;
-    }
-    
-    // 2. If we have a specific chat ID, try to find and select it
-    if (initialChatId && initialChatId !== 'new') {
-      console.log('[ChatInterface] Looking for chat with ID:', initialChatId);
-      const chat = initialChats.find(c => c.id === initialChatId);
-      if (chat) {
-        console.log('[ChatInterface] Found chat with ID, selecting:', chat.id);
-        handleSelectChat(chat.id);
-        initializationStateRef.current.hasInitialized = true;
-        return;
-      } else {
-        console.log('[ChatInterface] Chat with ID not found:', initialChatId);
+
+    // If we have initial chats, try to select one
+    if (initialChats?.length > 0) {
+      let chatToSelect: Chat | null = null;
+
+      // First try to find chat by initialChatId
+      if (initialChatId && initialChatId !== 'new') {
+        console.log('[ChatInterface] Looking for chat with ID:', initialChatId);
+        chatToSelect = initialChats.find(c => c.id === initialChatId) || null;
+        if (!chatToSelect) {
+          console.log('[ChatInterface] Chat with ID not found:', initialChatId);
+        }
+      }
+
+      // If no chat found by ID, try selectedChat
+      if (!chatToSelect && selectedChat) {
+        chatToSelect = selectedChat;
+      }
+
+      // If still no chat, try to find first chat with messages
+      if (!chatToSelect) {
+        chatToSelect = initialChats.find(c => c.messages?.length > 0) || null;
+      }
+
+      // Finally, just use the first chat if nothing else found
+      if (!chatToSelect) {
+        chatToSelect = initialChats[0] || null;
+      }
+
+      if (chatToSelect) {
+        console.log('[ChatInterface] Selecting chat:', chatToSelect.id);
+        handleSelectChatWrapper(chatToSelect.id);
       }
     }
-    
-    // 3. If we have chats, use the first one
-    if (initialChats.length > 0) {
-      console.log('[ChatInterface] Using first chat:', initialChats[0].id);
-      handleSelectChat(initialChats[0].id);
-      initializationStateRef.current.hasInitialized = true;
-      return;
-    }
-    
-    // 4. Only create a new chat if explicitly requested and we haven't created one yet
-    if (initialChatId === 'new' && !initializationStateRef.current.hasCreatedChat) {
-      console.log('[ChatInterface] New chat explicitly requested via URL');
-      
-      // Set flags to prevent multiple attempts
-      initializationStateRef.current.hasCreatedChat = true;
-      initializationStateRef.current.hasInitialized = true;
-      
-      // Create new chat
-      handleNewChat().then(newChat => {
-        if (newChat) {
-          console.log('[ChatInterface] New chat created successfully:', newChat.id);
-          // Update URL without page reload
-          window.history.pushState({}, '', `/chat/${newChat.id}`);
-        }
-      });
-      return;
-    }
 
-    // If we get here, something went wrong - mark as initialized to prevent further attempts
-    console.log('[ChatInterface] No valid chat found, marking as initialized to prevent further attempts');
-    initializationStateRef.current.hasInitialized = true;
-  }, [initialChats, initialChatId, selectedChat, handleNewChat, handleSelectChat, activeChat]);
+    // Mark as initialized
+    initializedRef.current = true;
+    console.log('[ChatInterface] Marked as initialized');
+  }, [initialChats, initialChatId, selectedChat, handleSelectChatWrapper]);
 
-  // Only for debugging
+  // Debug effect to log state changes
   useEffect(() => {
-    console.log("[ChatInterface] DEBUG - Current state:");
-    console.log("- initialChats:", initialChats.length);
-    console.log("- chats:", chats.length);
-    console.log("- activeChat:", activeChat?.id);
-    console.log("- activeChat title:", activeChat?.title);
-    console.log("- isFirstLoad:", isFirstLoad);
-    console.log("- currentUser:", currentUser);
-    console.log("- initializationState:", initializationStateRef.current);
-    
-    // Add detailed logging of chat data
-    if (initialChats.length > 0) {
-      console.log("- Initial chats detail:", initialChats.map(c => ({ id: c.id, title: c.title })));
-    }
-    if (chats.length > 0) {
-      console.log("- Current chats detail:", chats.map(c => ({ id: c.id, title: c.title })));
-    }
-  }, [chats, activeChat, initialChats, isFirstLoad, currentUser]);
+    console.log('[ChatInterface] DEBUG - Current state:', {
+      initialChats: initialChats?.length || 0,
+      chats: chats?.length || 0,
+      activeChat: activeChat?.id,
+      'activeChat title': activeChat?.title,
+      isFirstLoad,
+      currentUser,
+      initializationState: initializationStateRef.current
+    });
 
-  // Show loading state only if we have no chats or no active chat
-  if (!chats.length) {
+    if (initialChats?.length > 0) {
+      console.log('- Initial chats detail:', initialChats);
+    }
+  }, [initialChats, chats, activeChat, isFirstLoad, currentUser]);
+
+  // Show loading state only if we have no chats and we're not initialized
+  if (!chats && !initialChats && !initializedRef.current) {
+    console.log('[ChatInterface] Showing loading state - no chats and not initialized');
     return (
       <div className="flex h-[calc(100vh-4rem)] items-center justify-center bg-background">
         <div className="text-center">
@@ -362,7 +290,8 @@ const ChatInterface = forwardRef<ReturnType<typeof useChat>, ChatInterfaceProps>
   }
 
   // Show loading state if we have chats but no active chat and we're not initialized
-  if (!activeChat && !initializationStateRef.current.hasInitialized) {
+  if (!activeChat && !initializedRef.current) {
+    console.log('[ChatInterface] Showing initialization state - no active chat and not initialized');
     return (
       <div className="flex h-[calc(100vh-4rem)] items-center justify-center bg-background">
         <div className="text-center">
@@ -372,6 +301,31 @@ const ChatInterface = forwardRef<ReturnType<typeof useChat>, ChatInterfaceProps>
       </div>
     );
   }
+
+  // If we have no chats after initialization, show empty state
+  if (!chats?.length && !initialChats?.length && initializedRef.current) {
+    console.log('[ChatInterface] Showing empty state - no chats after initialization');
+    return (
+      <div className="flex h-[calc(100vh-4rem)] items-center justify-center bg-background">
+        <div className="text-center">
+          <p className="text-gray-600 dark:text-gray-400">No chats yet. Start a new conversation!</p>
+          <button
+            onClick={handleNewChatWrapper}
+            className="mt-4 px-4 py-2 bg-primary-600 text-white rounded-md hover:bg-primary-700"
+          >
+            New Chat
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  console.log('[ChatInterface] Rendering main interface:', {
+    chatsCount: chats?.length || 0,
+    activeChatId: activeChat?.id,
+    hasInitialized: initializedRef.current,
+    hasActiveChat: !!activeChat
+  });
 
   return (
     // Outermost container: Use calc to subtract likely navbar height (e.g., 4rem)
@@ -387,7 +341,7 @@ const ChatInterface = forwardRef<ReturnType<typeof useChat>, ChatInterfaceProps>
           activeChat={activeChat}
           onSelectChat={handleSelectChatWrapper}
           onNewChat={handleNewChatWrapper}
-          onDeleteChat={handleDeleteChat}
+          onDeleteChat={onDeleteChat}
           onCloseMobileSidebar={() => setIsMobileSidebarOpen(false)}
         />
       </div>
