@@ -94,23 +94,23 @@ export const models: AIModel[] = [
   },
   // Add local Ollama models
   {
-    id: 'ollama:llama3',
-    name: 'Llama 3 (Local)',
+    id: 'ollama:llama3.1:latest',
+    name: 'Llama 3.1 (Local)',
     provider: 'Ollama',
     capabilities: ['general', 'coding', 'creative', 'analysis', 'summarization'],
     tier: 'free',
     maxTokens: 8192,
-    description: 'Locally hosted Llama 3 model - low latency with complete privacy',
+    description: 'Locally hosted Llama 3.1 model - low latency with complete privacy',
     icon: '/icons/llama.svg'
   },
   {
-    id: 'ollama:deepseek',
-    name: 'DeepSeek (Local)',
+    id: 'ollama:deepseek-r1:latest',
+    name: 'DeepSeek-R1 (Local)',
     provider: 'Ollama',
     capabilities: ['general', 'coding', 'analysis'],
     tier: 'free',
     maxTokens: 8192,
-    description: 'Locally hosted DeepSeek model - excellent for coding tasks',
+    description: 'Locally hosted DeepSeek-R1 model - excellent for coding tasks',
     icon: '/icons/deepseek.svg'
   },
   {

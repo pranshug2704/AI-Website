@@ -97,7 +97,15 @@ export interface User {
 }
 
 // Task types for model routing
-export type TaskType = 'general' | 'code' | 'math' | 'creative' | 'vision';
+export type TaskType = 
+  'general' | 
+  'code' | 
+  'coding' |
+  'math' | 
+  'creative' | 
+  'analysis' |
+  'summarization' |
+  'vision';
 
 // AI Provider types
 export type AIProvider = 'openai' | 'anthropic' | 'google' | 'mistral';

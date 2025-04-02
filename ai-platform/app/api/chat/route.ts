@@ -95,7 +95,7 @@ export async function POST(request: NextRequest) {
     }
     
     // Make sure we have a valid modelId, default to gpt-3.5-turbo if not specified
-    const safeModelId = modelId || 'gpt-3.5-turbo';
+    const safeModelId = preferredModelId || 'gpt-3.5-turbo';
     
     // Stream response from AI
     return createAIResponse(messages, safeModelId);

@@ -6,6 +6,7 @@ import { useAutoScroll } from '@/app/lib/hooks/useAutoScroll';
 interface MessageListProps {
   messages: MessageType[];
   isFirstLoad: boolean;
+  initialScrollPosition?: number;
   onRetry?: (messageId: string) => void;
   onEdit?: (messageId: string) => void;
 }
@@ -13,19 +14,28 @@ interface MessageListProps {
 const MessageList: React.FC<MessageListProps> = ({ 
   messages, 
   isFirstLoad,
+  initialScrollPosition,
   onRetry,
   onEdit
 }) => {
-  const endOfMessagesRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const { scrollToBottom } = useAutoScroll(endOfMessagesRef, { messages });
+  const { scrollToBottom } = useAutoScroll(messagesEndRef, { messages });
 
-  // Scroll to bottom immediately when component mounts if it's the first load
+  // Effect to handle initial scroll position
   useEffect(() => {
-    if (isFirstLoad && endOfMessagesRef.current) {
-      scrollToBottom(true);
+    if (containerRef.current && initialScrollPosition) {
+      console.log('[MessageList] Setting initial scroll position:', initialScrollPosition);
+      containerRef.current.scrollTop = initialScrollPosition;
     }
-  }, [isFirstLoad, scrollToBottom]);
+  }, [initialScrollPosition]);
+
+  // Effect to scroll to bottom on new messages
+  useEffect(() => {
+    if (!isFirstLoad && messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [messages, isFirstLoad]);
 
   // Prevent scrolling of the body when container is at top or bottom
   useEffect(() => {
@@ -79,7 +89,7 @@ const MessageList: React.FC<MessageListProps> = ({
             message={message}
           />
         ))}
-        <div ref={endOfMessagesRef} />
+        <div ref={messagesEndRef} />
       </div>
     </div>
   );

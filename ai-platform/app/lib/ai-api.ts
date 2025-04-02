@@ -88,7 +88,8 @@ export async function* streamOpenAI(
   try {
     console.log('Attempting to use OpenAI API with model:', modelId);
     
-    const mappedMessages = messages.map(m => {
+    // Correctly map messages to OpenAI's expected type
+    const mappedMessages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = messages.map(m => {
       if (m.role === 'user') {
         return { role: 'user', content: m.content };
       } else if (m.role === 'assistant') {
@@ -156,17 +157,17 @@ export async function* streamAnthropic(
   temperature: number = 0.7
 ): AsyncGenerator<string, { usage: TokenUsage }, unknown> {
   try {
-    const mappedMessages = messages.map(m => {
-      if (m.role === 'user') {
-        return { role: 'user', content: m.content };
-      } else if (m.role === 'assistant') {
-        return { role: 'assistant', content: m.content };
-      } else {
-        // Anthropic only supports user and assistant roles
-        return { role: 'user', content: `System: ${m.content}` };
-      }
-    });
-    
+    // Correctly map messages to Anthropic's expected type, filtering system messages
+    const mappedMessages: Anthropic.MessageParam[] = messages
+      .filter(m => m.role === 'user' || m.role === 'assistant') // Anthropic only supports user/assistant
+      .map(m => ({
+        role: m.role as 'user' | 'assistant',
+        content: m.content
+      }));
+
+    // Handle system messages separately (if any)
+    const systemMessage = messages.find(m => m.role === 'system')?.content;
+
     // Get fresh client for each request
     const anthropic = getAnthropicClient();
     const keys = getApiKeys();
@@ -175,6 +176,7 @@ export async function* streamAnthropic(
     const stream = await anthropic.messages.create({
       model: modelId,
       messages: mappedMessages,
+      system: systemMessage, // Pass system message separately
       temperature,
       stream: true,
       max_tokens: 4096
@@ -299,35 +301,46 @@ export async function* streamGoogle(
       }
     }
     
-    const chat = model.startChat({
-      history: chatHistory.slice(0, -1),
-      generationConfig: {
-        temperature
-      }
-    });
+    // Log the exact history being sent
+    console.log('[streamGoogle] Sending chatHistory:', JSON.stringify(chatHistory, null, 2));
     
-    const lastMessage = chatHistory[chatHistory.length - 1];
+    // Use generateContentStream instead of startChat + sendMessageStream
+    console.log('[streamGoogle] Calling model.generateContentStream...');
     let result;
-
-    if (lastMessage.parts.length > 1) {
-      // If we have multiple parts (text and images), send the parts directly
-      result = await chat.sendMessageStream(lastMessage.parts);
-    } else {
-      // Otherwise just send the text
-      result = await chat.sendMessageStream(lastMessage.parts[0].text);
+    try {
+      result = await model.generateContentStream({
+        contents: chatHistory, // Send the entire formatted history
+        generationConfig: {
+          temperature
+        }
+      });
+      console.log('[streamGoogle] model.generateContentStream call succeeded.');
+    } catch (apiCallError) {
+      console.error('[streamGoogle] Error calling model.generateContentStream:', apiCallError);
+      throw apiCallError; // Re-throw to be caught by the outer catch
     }
     
     let content = '';
     let promptTokens = 0;
     let completionTokens = 0;
     
-    for await (const chunk of result.stream) {
-      const text = chunk.text();
-      content += text;
-      yield text;
-      
-      // Google doesn't provide token counts in stream, estimate based on content
-      completionTokens += text.length / 4;
+    console.log('[streamGoogle] Starting to process result.stream...');
+    try {
+      for await (const chunk of result.stream) {
+        console.log('[streamGoogle] Received stream chunk.'); // Log if loop is entered
+        const text = chunk.text();
+        console.log('[streamGoogle] Chunk text:', text); // Log extracted text
+        content += text;
+        yield text;
+        
+        // Google doesn't provide token counts in stream, estimate based on content
+        completionTokens += text.length / 4;
+      }
+      console.log('[streamGoogle] Finished processing result.stream.'); // Log if loop completes
+    } catch (streamError) {
+      console.error('[streamGoogle] Error processing stream:', streamError);
+      // Decide if you want to throw here or handle differently
+      throw streamError;
     }
     
     // Estimate prompt tokens
@@ -397,8 +410,9 @@ export async function* streamMistral(
           let completionTokens = 0;
       
           for await (const chunk of response) {
-            if (chunk.type === 'content_block_delta') {
-              const text = chunk.delta?.text || '';
+            // Correctly access content from Mistral stream chunk
+            const text = chunk.choices[0]?.delta?.content || '';
+            if (text) { // Check if text is not empty
               content += text;
               yield text;
               
@@ -445,8 +459,9 @@ export async function* streamMistral(
     let completionTokens = 0;
 
     for await (const chunk of response) {
-      if (chunk.type === 'content_block_delta') {
-        const text = chunk.delta?.text || '';
+      // Correctly access content from Mistral stream chunk
+      const text = chunk.choices[0]?.delta?.content || '';
+      if (text) { // Check if text is not empty
         content += text;
         yield text;
         

@@ -37,34 +37,22 @@ export const useChatApi = () => {
         }),
       });
       
+      // Check for successful response and body
       if (!response.ok) {
-        let errorMessage = `Server error: ${response.status}`;
-        try {
-          const errorData = await response.json();
-          if (errorData.error) {
-            errorMessage = errorData.error;
-          }
-        } catch (e) {
-          // If JSON parsing fails, provide a more specific error based on status code
-          if (response.status === 401) {
-            errorMessage = "Authentication error. Please log in again.";
-          } else if (response.status === 403) {
-            errorMessage = "You've reached your usage limit. Please upgrade your plan.";
-          }
-        }
-        
-        throw new Error(errorMessage);
+        const errorBody = await response.text();
+        console.error('API request failed:', response.status, errorBody);
+        throw new Error(`API request failed with status ${response.status}: ${errorBody || response.statusText}`);
+      }
+      
+      if (!response.body) {
+        throw new Error('Response body is missing');
       }
 
       // Set up event source
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('Failed to get response reader');
-      }
-      
-      let receivedMessage = '';
-      let decoder = new TextDecoder();
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
       let done = false;
+      let receivedMessage = '';
       
       // Variables to store model information
       let modelId = selectedModelId || chat.modelId;
@@ -76,68 +64,29 @@ export const useChatApi = () => {
       while (!done) {
         const { value, done: readerDone } = await reader.read();
         done = readerDone;
-        
         if (value) {
           const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split('\n\n');
           
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.slice(6);
-              try {
-                const parsedData = JSON.parse(data);
-                
-                // Handle different event types
-                switch (parsedData.event) {
-                  case 'metadata':
-                    console.log('Model metadata:', parsedData.data);
-                    // Store model information
-                    if (parsedData.data.modelId) modelId = parsedData.data.modelId;
-                    if (parsedData.data.modelName) modelName = parsedData.data.modelName;
-                    // Check if this provider requires an API key
-                    const provider = parsedData.data.provider.toLowerCase();
-                    if (providersRequiringKeys.includes(provider)) {
-                      // This will be used later if we get an error
-                      message.provider = provider;
-                    }
-                    break;
-                    
-                  case 'chunk':
-                    receivedMessage += parsedData.data.content;
-                    onUpdate({
-                      ...message,
-                      content: receivedMessage,
-                    });
-                    break;
-                    
-                  case 'usage':
-                    console.log('Token usage:', parsedData.data);
-                    message.tokenUsage = parsedData.data;
-                    break;
-                    
-                  case 'error':
-                    let errorMsg = parsedData.data.message || 'Unknown error occurred';
-                    
-                    // Enhance error messages with provider context if available
-                    if (message.provider) {
-                      if (errorMsg.includes('API key')) {
-                        errorMsg = `The ${message.provider} API key is missing or invalid. Please configure it in your settings.`;
-                      } else if (errorMsg.includes('not available')) {
-                        errorMsg = `The ${message.provider} service is currently not available. Please try another model.`;
-                      }
-                    }
-                    
-                    throw new Error(errorMsg);
-                    
-                  case 'done':
-                    done = true;
-                    break;
-                    
-                  default:
-                    console.log('Unknown event type:', parsedData.event);
-                }
-              } catch (e) {
-                console.error('Error parsing SSE data:', e);
+          // Try to parse the chunk as JSON first
+          try {
+            const parsedChunk = JSON.parse(chunk);
+            if (parsedChunk.text) {
+              // If it's a text chunk, update immediately with just the new chunk
+              receivedMessage += parsedChunk.text;
+              onUpdate({ ...message, content: receivedMessage });
+            } else if (parsedChunk.usage) {
+              // If it's usage information, store it
+              console.log('[useChatApi] Received usage information:', parsedChunk.usage);
+            }
+          } catch (e) {
+            // If it's not JSON, treat it as raw text
+            // Split the chunk into lines to handle potential line breaks
+            const lines = chunk.split('\n');
+            for (const line of lines) {
+              if (line.trim()) {
+                // Send each line immediately
+                receivedMessage += line + '\n';
+                onUpdate({ ...message, content: receivedMessage });
               }
             }
           }
@@ -146,6 +95,7 @@ export const useChatApi = () => {
       
       // Format final message content properly
       if (!receivedMessage.trim()) {
+        console.warn('[useChatApi] Stream ended but receivedMessage was empty.')
         receivedMessage = "I couldn't generate a response. Please try again or select a different model.";
       }
       
@@ -155,7 +105,7 @@ export const useChatApi = () => {
         content: receivedMessage,
         loading: false,
         completed: true,
-        modelId: modelId, // Include the model ID
+        modelId: modelId,
       });
       
     } catch (error) {

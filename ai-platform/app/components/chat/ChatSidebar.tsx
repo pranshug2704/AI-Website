@@ -7,7 +7,7 @@ interface ChatSidebarProps {
   chats: Chat[];
   activeChat: Chat | null;
   onSelectChat: (chatId: string) => void;
-  onNewChat: () => void;
+  onNewChat: () => void | Promise<void>;
   onDeleteChat: (chatId: string) => void;
   onCloseMobileSidebar: () => void;
 }
@@ -21,6 +21,48 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
   onCloseMobileSidebar,
 }) => {
   const [menuOpenChatId, setMenuOpenChatId] = useState<string | null>(null);
+  const [isCreatingNewChat, setIsCreatingNewChat] = useState(false);
+  
+  // Handle new chat button click
+  const handleNewChatClick = async () => {
+    console.log('=== [ChatSidebar] New chat button clicked ===');
+    console.log('[ChatSidebar] Current state:', {
+      isCreatingNewChat,
+      chatsCount: chats.length,
+      activeChat: activeChat?.id,
+      onNewChat: !!onNewChat
+    });
+    
+    try {
+      // Prevent multiple clicks
+      if (isCreatingNewChat) {
+        console.log('[ChatSidebar] Already creating a new chat, skipping');
+        return;
+      }
+      
+      console.log('[ChatSidebar] Setting isCreatingNewChat to true');
+      setIsCreatingNewChat(true);
+      
+      if (!onNewChat) {
+        throw new Error('onNewChat handler is not defined');
+      }
+      
+      console.log('[ChatSidebar] Calling onNewChat...');
+      // Call onNewChat and wait for it to complete
+      await onNewChat();
+      console.log('[ChatSidebar] New chat creation completed');
+    } catch (error) {
+      console.error('[ChatSidebar] Error creating new chat:', error);
+      // You might want to add a toast notification or error message here
+    } finally {
+      // Add a small delay before resetting isCreatingNewChat to ensure
+      // the user sees the loading state
+      setTimeout(() => {
+        console.log('[ChatSidebar] Setting isCreatingNewChat to false');
+        setIsCreatingNewChat(false);
+      }, 500);
+    }
+  };
   
   // Format date for display
   const formatDate = (date: Date): string => {
@@ -135,13 +177,21 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
           Chats ({chats?.length || 0})
         </h2>
         <button
-          onClick={onNewChat}
-          className="flex items-center justify-center w-9 h-9 rounded-full bg-primary-600 text-white hover:bg-primary-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500"
+          onClick={(e) => {
+            console.log('=== [ChatSidebar] Button clicked ===');
+            handleNewChatClick();
+          }}
+          disabled={isCreatingNewChat}
+          className={`flex items-center justify-center w-9 h-9 rounded-full ${
+            isCreatingNewChat 
+              ? 'bg-gray-400 cursor-not-allowed' 
+              : 'bg-primary-600 hover:bg-primary-700'
+          } text-white focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500`}
           aria-label="New Chat"
         >
           <svg
             xmlns="http://www.w3.org/2000/svg"
-            className="h-5 w-5"
+            className={`h-5 w-5 ${isCreatingNewChat ? 'animate-spin' : ''}`}
             viewBox="0 0 20 20"
             fill="currentColor"
           >
@@ -154,7 +204,7 @@ const ChatSidebar: React.FC<ChatSidebarProps> = ({
         </button>
       </div>
       
-      <div className="flex-1 overflow-y-auto max-h-[calc(100vh-140px)] scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent hover:scrollbar-thumb-gray-400 dark:hover:scrollbar-thumb-gray-500 pb-4">
+      <div className="flex-1 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 scrollbar-track-transparent hover:scrollbar-thumb-gray-400 dark:hover:scrollbar-thumb-gray-500">
         {Object.keys(groupedChats).length > 0 ? (
           Object.entries(groupedChats).map(([date, chatsForDate]) => (
             <div key={date} className="mt-2">

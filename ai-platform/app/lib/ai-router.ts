@@ -2,12 +2,9 @@ import { Message, AIModel, AIProvider, SubscriptionTier, TaskType } from '../typ
 import { getModelById, getAvailableModels, getModelsForTask, setAvailableProviders } from './models';
 import { streamAnthropic, streamGoogle, streamMistral, streamOllama, streamOpenAI } from './ai-api';
 import { getCachedApiKeys } from '../api/keys/route';
-import { getAvailableProviders } from './server-utils';
+import { getAvailableProviders, isProviderAvailable } from './server-utils';
 import { detectTaskType } from './task-detection';
-import { StreamingTextResponse, LangChainStream, Message as VercelChatMessage } from 'ai';
-import { ChatOpenAI, DynamicStructuredTool, initializeAgentExecutorWithOptions } from 'langchain/agents';
-import { ChatAnthropic } from 'langchain/chat_models/anthropic';
-import { HumanMessage, AIMessage, SystemMessage } from 'langchain/schema';
+import { Message as VercelChatMessage } from 'ai';
 
 /**
  * The AI Router is responsible for selecting the most appropriate AI model
@@ -311,13 +308,13 @@ export async function streamAIResponse({
     let modelId = model?.id || 'auto-select';
     
     if (modelId === 'auto-select') {
-      modelId = routeRequest();
+      modelId = routeAIRequest({} as RouterInput).selectedModel.id;
     } else {
       // Check if the selected model's provider is available
       const provider = getProviderFromModelId(modelId);
       if (!availableProviders.includes(provider.toLowerCase())) {
         console.log(`Provider ${provider} for model ${modelId} is not available. Using auto-select.`);
-        modelId = routeRequest();
+        modelId = routeAIRequest({} as RouterInput).selectedModel.id;
       }
     }
     
@@ -356,13 +353,23 @@ async function handleOllamaRequest(
   console.log(`Handling Ollama request for model ${modelId}`);
   
   try {
-    const stream = streamOllama(messages, modelId);
-    return new StreamingTextResponse(
-      (async function* () {
-        for await (const chunk of stream) {
-          yield chunk;
+    // Use ReadableStream to create a proper response
+    return new Response(
+      new ReadableStream({
+        async start(controller) {
+          try {
+            const stream = streamOllama(messages, modelId);
+            for await (const chunk of stream) {
+              const encoder = new TextEncoder();
+              controller.enqueue(encoder.encode(chunk));
+            }
+            controller.close();
+          } catch (error) {
+            console.error('Error streaming from Ollama:', error);
+            controller.error(error);
+          }
         }
-      })()
+      })
     );
   } catch (error) {
     console.error('Error in Ollama request:', error);

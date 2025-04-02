@@ -202,6 +202,7 @@ const Message: React.FC<MessageProps> = ({ message }) => {
                 {/* Display content based on type */}
                 {(contentType === 'markdown' || contentType === 'text' || contentType === 'multipart') && message.content ? (
                   <ReactMarkdown
+                    key={message.content}
                     // Restore pre-processing: collapse 3+ newlines to 2
                     children={message.content.replace(/\n{3,}/g, '\n\n').trim()}
                     remarkPlugins={[remarkGfm]}
