@@ -198,25 +198,17 @@ export default function ClientChatPage() {
   // Handle chat selection
   const handleSelectChatWrapper = useCallback(async (chatId: string) => {
     console.log('[client-page] Selecting chat:', chatId);
-    try {
-      const response = await fetch(`/api/chats/${chatId}`);
-      if (!response.ok) {
-        throw new Error('Failed to fetch chat');
-      }
-      const chat = await response.json();
-      setActiveChat(chat);
-      setChats(prevChats => {
-        const updatedChats = prevChats?.map(c => 
-          c.id === chat.id ? chat : c
-        ) || [];
-        return updatedChats;
-      });
+    // Use the handleSelectChat function from the useChat hook
+    const selected = handleSelectChat(chatId);
+    
+    if (selected) {
       // Update URL without page reload
       router.push(`/chat?id=${chatId}`);
-    } catch (error) {
-      console.error('[client-page] Error selecting chat:', error);
+    } else {
+      console.error('[client-page] Error selecting chat: Chat not found in hook state');
+      // Optionally handle the error, e.g., show a notification or redirect
     }
-  }, [setActiveChat, setChats, router]);
+  }, [handleSelectChat, router]);
 
   // Handle new chat creation
   const handleNewChatWrapper = useCallback(async () => {

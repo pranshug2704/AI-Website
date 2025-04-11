@@ -47,74 +47,51 @@ export function useChat(
   
   // Initialize chat selection and ensure state synchronization
   useEffect(() => {
-    console.log('[useChat] Initialization effect triggered with:', {
-      initialChatsCount: initialChats?.length || 0,
-      initialChatId,
-      hasInitialSelectedChat: !!initialSelectedChat,
-      initialized: initializedRef.current,
-      currentChatsCount: chats.length,
-      hasActiveChat: !!activeChat
-    });
-
-    // Only proceed if we have chats
-    if (initialChats?.length > 0) {
-      // If chats state is empty, update it with initialChats
-      if (chats.length === 0) {
-        console.log('[useChat] Setting up chats state with', initialChats.length, 'chats');
-        setChats(initialChats);
+    // Only proceed if we have chats and they haven't been initialized yet
+    if (initialChats?.length > 0 && !initializedRef.current) {
+      console.log('[useChat] Initializing with', initialChats.length, 'chats');
+      
+      // Set the chats state
+      setChats(initialChats);
+      
+      // Determine which chat to set as active
+      let chatToSet: Chat | null = null;
+      
+      // First try to find chat by initialChatId
+      if (initialChatId && initialChatId !== 'new') {
+        chatToSet = initialChats.find(c => c.id === initialChatId) || null;
       }
       
-      // If we have no active chat, try to select one
-      if (!activeChat) {
-        let chatToSet: Chat | null = null;
-        
-        // First try to find chat by initialChatId
-        if (initialChatId && initialChatId !== 'new') {
-          chatToSet = initialChats.find(c => c.id === initialChatId) || null;
-          if (chatToSet) {
-            console.log('[useChat] Found chat with ID, selecting:', chatToSet.id);
-          }
-        }
-        
-        // If no chat found by ID, try initialSelectedChat
-        if (!chatToSet && initialSelectedChat) {
-          chatToSet = initialSelectedChat;
-          console.log('[useChat] Using initial selected chat:', chatToSet.id);
-        }
-        
-        // If still no chat selected, select the first chat with messages
-        if (!chatToSet) {
-          chatToSet = initialChats.find(c => c.messages && c.messages.length > 0) || null;
-          if (chatToSet) {
-            console.log('[useChat] Selecting first chat with messages:', chatToSet.id);
-          }
-        }
-        
-        // Finally, just use the first chat if nothing else found
-        if (!chatToSet) {
-          chatToSet = initialChats[0] || null;
-          if (chatToSet) {
-            console.log('[useChat] Selecting first available chat:', chatToSet.id);
-          }
-        }
-        
-        if (chatToSet) {
-          console.log('[useChat] Setting active chat:', chatToSet.id);
-          setActiveChat(chatToSet);
-        }
+      // If no chat found by ID, try initialSelectedChat
+      if (!chatToSet && initialSelectedChat) {
+        chatToSet = initialSelectedChat;
       }
       
-      // Mark as initialized if we have both chats and an active chat
-      if (chats.length > 0 && activeChat) {
-        initializedRef.current = true;
-        console.log('[useChat] Initialization complete:', {
-          chatsCount: chats.length,
-          activeChatId: activeChat.id,
-          initialized: initializedRef.current
-        });
+      // If still no chat selected, select the first chat with messages
+      if (!chatToSet) {
+        chatToSet = initialChats.find(c => c.messages && c.messages.length > 0) || null;
       }
+      
+      // Finally, just use the first chat if nothing else found
+      if (!chatToSet) {
+        chatToSet = initialChats[0] || null;
+      }
+      
+      // Set the active chat if we found one
+      if (chatToSet) {
+        console.log('[useChat] Setting active chat:', chatToSet.id);
+        setActiveChat(chatToSet);
+      }
+      
+      // Mark as initialized
+      initializedRef.current = true;
+      console.log('[useChat] Initialization complete:', {
+        chatsCount: initialChats.length,
+        activeChatId: chatToSet?.id,
+        initialized: true
+      });
     }
-  }, [initialChats, chats, activeChat, initialChatId, initialSelectedChat]);
+  }, [initialChats, initialChatId, initialSelectedChat]);
 
   // Get available models based on user subscription
   const availableModels = currentUser ? getAvailableModels(currentUser.subscription) : [];
@@ -173,24 +150,10 @@ export function useChat(
   const handleNewChat = useCallback(async () => {
     if (!currentUser) return null;
     
-    console.log('=== [useChat] Creating new chat ===');
-    console.log('[useChat] Current state:', {
-      isLoading,
-      selectedModel: selectedModel?.id,
-      activeChat: activeChat?.id,
-      chatsCount: chats.length,
-      initialized: initializedRef.current
-    });
+    console.log('[useChat] Creating new chat');
     
-    // Prevent multiple simultaneous chat creation attempts
-    if (isLoading) {
-      console.log('[useChat] Already loading, skipping new chat creation');
-      return null;
-    }
-
     try {
       setIsLoading(true);
-      console.log('[useChat] Making API request to create new chat...');
       
       // Create new chat on the server
       const response = await fetch('/api/chat/history', {
@@ -204,61 +167,30 @@ export function useChat(
         }),
       });
 
-      // Log the raw response for debugging
-      console.log('[useChat] API response status:', response.status);
-      const responseText = await response.text();
-      console.log('[useChat] API response text:', responseText);
-
       if (!response.ok) {
-        throw new Error(`Failed to create new chat: ${response.status} - ${responseText}`);
+        throw new Error(`Failed to create new chat: ${response.status}`);
       }
 
-      let responseData;
-      try {
-        responseData = JSON.parse(responseText);
-      } catch (parseError) {
-        console.error('[useChat] Failed to parse API response:', parseError);
-        throw new Error('Invalid response format from server');
-      }
-
-      console.log('[useChat] Parsed API response:', responseData);
-
-      // Extract the chat object from the response
-      const newChat = responseData.chat;
+      const { chat: newChat } = await response.json();
+      
       if (!newChat || !newChat.id) {
-        console.error('[useChat] Invalid chat data received:', responseData);
         throw new Error('Server returned invalid chat data');
       }
 
-      // Create a new chat object, preserving any existing messages from the server
+      // Create a new chat object
       const chat: Chat = {
         ...newChat,
-        messages: newChat.messages || [], // Use existing messages if available, otherwise empty array
-        // Don't overwrite server timestamps
+        messages: newChat.messages || [],
         createdAt: newChat.createdAt || new Date().toISOString(),
         updatedAt: newChat.updatedAt || new Date().toISOString(),
-        title: newChat.title || 'New Chat' // Use server title if available
+        title: newChat.title || 'New Chat'
       };
 
-      console.log('[useChat] Created chat object:', chat);
-
-      console.log('[useChat] Updating chats state...');
-      // Update state immediately
-      setChats(prevChats => {
-        // Check if chat already exists
-        if (prevChats.some(c => c.id === chat.id)) {
-          console.log('[useChat] Chat already exists, skipping duplicate');
-          return prevChats;
-        }
-        console.log('[useChat] Adding new chat to chats array');
-        return [chat, ...prevChats];
-      });
-
-      console.log('[useChat] Setting active chat...');
-      // Set as active chat immediately
+      // Update state
+      setChats(prevChats => [chat, ...prevChats]);
       setActiveChat(chat);
       
-      console.log('[useChat] Chat creation completed successfully');
+      console.log('[useChat] New chat created:', chat.id);
       return chat;
     } catch (error) {
       console.error('[useChat] Error creating new chat:', error);
@@ -266,7 +198,7 @@ export function useChat(
     } finally {
       setIsLoading(false);
     }
-  }, [selectedModel, setChats, setActiveChat, isLoading, chats, activeChat, currentUser]);
+  }, [selectedModel, currentUser]);
 
   // Select a specific chat
   const handleSelectChat = useCallback((chatId: string) => {
